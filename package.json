@@ -1,7 +1,11 @@
 {
   "name": "aura-alpha-desktop",
-  "version": "8.0.0",
+  "version": "8.0.1",
   "description": "Aura Alpha — Autonomous Trading Intelligence Platform",
+  "author": {
+    "name": "Aura Holdings LLC",
+    "email": "shawn@auraalpha.cc"
+  },
   "main": "main.js",
   "scripts": {
     "start": "electron .",
