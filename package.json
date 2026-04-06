@@ -28,15 +28,18 @@
     },
     "mac": {
       "target": ["dmg"],
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "artifactName": "AuraAlpha_${version}_aarch64.${ext}"
     },
     "linux": {
-      "target": ["AppImage"],
-      "icon": "assets/icon.png"
+      "target": ["AppImage", "deb"],
+      "icon": "assets/icon.png",
+      "artifactName": "AuraAlpha_${version}_amd64.${ext}"
     },
     "nsis": {
-      "oneClick": true,
-      "allowToChangeInstallationDirectory": false
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "AuraAlpha_${version}_x64-setup.${ext}"
     },
     "publish": {
       "provider": "github",
