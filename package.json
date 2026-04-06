@@ -1,0 +1,47 @@
+{
+  "name": "aura-alpha-desktop",
+  "version": "8.0.0",
+  "description": "Aura Alpha — Autonomous Trading Intelligence Platform",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "electron-updater": "^6.1.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "cc.auraalpha.desktop",
+    "productName": "Aura Alpha",
+    "directories": { "output": "release" },
+    "files": ["main.js", "preload.js", "worker.js", "updater.js", "dist/**/*", "assets/**/*"],
+    "win": {
+      "target": ["nsis"],
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": ["dmg"],
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "sgallup23",
+      "repo": "AuraAlphaDesktop"
+    }
+  }
+}
