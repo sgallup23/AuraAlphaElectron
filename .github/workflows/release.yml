@@ -18,6 +18,10 @@ jobs:
             platform: win
           - os: macos-latest
             platform: mac
+            arch: --arm64
+          - os: macos-13
+            platform: mac
+            arch: --x64
           - os: ubuntu-latest
             platform: linux
 
@@ -32,14 +36,14 @@ jobs:
         run: npm ci
 
       - name: Build Electron app
-        run: npx electron-builder --${{ matrix.platform }} --publish never
+        run: npx electron-builder --${{ matrix.platform }} ${{ matrix.arch }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.platform }}
+          name: release-${{ matrix.os }}
           path: |
             release/*.exe
             release/*.msi
@@ -63,9 +67,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/release-win/*
-            artifacts/release-mac/*
-            artifacts/release-linux/*
+            artifacts/release-windows-latest/*
+            artifacts/release-macos-latest/*
+            artifacts/release-macos-13/*
+            artifacts/release-ubuntu-latest/*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
