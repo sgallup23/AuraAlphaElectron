@@ -33,11 +33,10 @@ const userDataPath = app.getPath('userData');
 const stateFile = path.join(userDataPath, 'window-state.json');
 const isDev = !app.isPackaged;
 const DIST_PATH = path.join(__dirname, 'dist');
-// Direct to EC2 for speed (skip Cloudflare ~150ms per request)
-// Falls back to Cloudflare if direct fails
-const API_BASE_DIRECT = 'http://54.172.235.137:8020';
+// Cloudflare first (always reachable from any network), direct EC2 as fallback
 const API_BASE_CDN = 'https://auraalpha.cc';
-const API_BASE = API_BASE_DIRECT;
+const API_BASE_DIRECT = 'http://54.172.235.137:8020';
+const API_BASE = API_BASE_CDN;
 const SCHEME = 'aura';
 
 // ── Log ring buffer ──────────────────────────────────────────────────
@@ -310,7 +309,17 @@ function createWindow() {
     mainWindow.maximize();
   }
 
-  // Load via our custom protocol so absolute paths resolve correctly
+  // Intercept any navigation away from root and force back to index.html
+  // This prevents Electron from restoring stale routes that cause 404s
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const parsed = new URL(url);
+    // Allow aura:// protocol navigations (our custom protocol)
+    if (parsed.protocol === `${SCHEME}:`) return;
+    // Block external navigations
+    event.preventDefault();
+  });
+
+  // Always load root URL on startup
   mainWindow.loadURL(`${SCHEME}://app/index.html`);
 
   mainWindow.once('ready-to-show', () => {
