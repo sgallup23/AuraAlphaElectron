@@ -193,7 +193,7 @@ function createWindow() {
   }
 
   // Load via our custom protocol so absolute paths resolve correctly
-  mainWindow.loadURL(`${SCHEME}://app/index.html`);
+  mainWindow.loadURL(`${SCHEME}://app/`);
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();

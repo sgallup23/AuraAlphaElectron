@@ -19,13 +19,14 @@ function findPython() {
 
   if (process.platform === 'win32') {
     candidates.push(
-      'C:\\Python311\\python.exe',
-      'C:\\Python312\\python.exe',
+      'C:\\Python314\\python.exe',
       'C:\\Python313\\python.exe',
+      'C:\\Python312\\python.exe',
+      'C:\\Python311\\python.exe',
     );
     // Search common user install locations
     const userHome = os.homedir();
-    for (const ver of ['311', '312', '313', '310']) {
+    for (const ver of ['314', '313', '312', '311', '310']) {
       candidates.push(
         path.join(userHome, 'AppData', 'Local', 'Programs', 'Python', `Python${ver}`, 'python.exe'),
       );
