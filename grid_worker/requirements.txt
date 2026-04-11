@@ -1,0 +1,20 @@
+# Aura Alpha Grid Worker — Dependencies
+# Install: pip install -r requirements.txt
+
+# Core (required)
+psutil>=5.9.0
+requests>=2.28.0
+pyyaml>=6.0
+
+# Compute (for backtest/ML jobs)
+numpy>=1.24.0
+polars>=0.20.0
+
+# Data (for OHLCV fetching in standalone mode)
+yfinance>=0.2.0
+
+# GPU / ML (optional but recommended)
+# Install CUDA version for NVIDIA GPU support:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# Or CPU-only:
+#   pip install torch

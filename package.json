@@ -25,7 +25,25 @@
     "appId": "cc.auraalpha.desktop",
     "productName": "Aura Alpha",
     "directories": { "output": "release" },
-    "files": ["main.js", "preload.js", "worker.js", "updater.js", "dist/**/*", "assets/**/*"],
+    "files": [
+      "main.js",
+      "preload.js",
+      "worker.js",
+      "updater.js",
+      "dist/**/*",
+      "assets/**/*",
+      "grid_worker/**/*",
+      "!grid_worker/venv/**/*",
+      "!grid_worker/__pycache__/**/*",
+      "!grid_worker/**/__pycache__/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "grid_worker",
+        "to": "grid_worker",
+        "filter": ["**/*", "!venv/**/*", "!**/__pycache__/**/*"]
+      }
+    ],
     "win": {
       "target": ["nsis"],
       "icon": "assets/icon.ico"

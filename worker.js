@@ -45,13 +45,23 @@ function findPython() {
 
 // ── Find worker.py ────────────────────────────────────────────────────
 function findWorkerScript() {
-  const searchPaths = [
-    path.join(__dirname, 'grid_worker', 'worker.py'),
+  // When packaged, extraResources lives at process.resourcesPath/grid_worker/
+  // Fall back to dev paths when running from source.
+  const searchPaths = [];
+
+  // 1. Packaged installer: resources/grid_worker/worker.py
+  if (process.resourcesPath) {
+    searchPaths.push(path.join(process.resourcesPath, 'grid_worker', 'worker.py'));
+  }
+  // 2. Local dev: grid_worker/ next to this file
+  searchPaths.push(path.join(__dirname, 'grid_worker', 'worker.py'));
+  // 3. Dev fallbacks
+  searchPaths.push(
     path.join(__dirname, '..', 'AuraCommandV2', 'grid_worker', 'worker.py'),
     path.join(os.homedir(), 'AuraCommandV2', 'grid_worker', 'worker.py'),
     path.join(os.homedir(), 'AuraCommandV2', 'frontend', 'grid_worker', 'worker.py'),
     path.join(__dirname, 'worker.py'),
-  ];
+  );
 
   for (const p of searchPaths) {
     if (fs.existsSync(p)) return p;
