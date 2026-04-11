@@ -1,7 +1,7 @@
 {
   "name": "aura-alpha-desktop",
-  "version": "8.3.0",
-  "description": "Aura Alpha — Autonomous Trading Intelligence Platform",
+  "version": "8.3.1",
+  "description": "Aura Alpha \u2014 Autonomous Trading Intelligence Platform",
   "author": {
     "name": "Aura Holdings LLC",
     "email": "shawn@auraalpha.cc"
@@ -24,7 +24,9 @@
   "build": {
     "appId": "cc.auraalpha.desktop",
     "productName": "Aura Alpha",
-    "directories": { "output": "release" },
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "main.js",
       "preload.js",
@@ -41,20 +43,31 @@
       {
         "from": "grid_worker",
         "to": "grid_worker",
-        "filter": ["**/*", "!venv/**/*", "!**/__pycache__/**/*"]
+        "filter": [
+          "**/*",
+          "!venv/**/*",
+          "!**/__pycache__/**/*"
+        ]
       }
     ],
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "assets/icon.ico"
     },
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "icon": "assets/icon.icns",
       "artifactName": "AuraAlpha_${version}_${arch}.${ext}"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "assets/icon.png",
       "artifactName": "AuraAlpha_${version}_amd64.${ext}"
     },
