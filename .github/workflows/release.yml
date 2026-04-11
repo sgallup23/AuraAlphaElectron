@@ -12,6 +12,7 @@ jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -19,9 +20,6 @@ jobs:
           - os: macos-latest
             platform: mac
             arch: --arm64
-          - os: macos-13
-            platform: mac
-            arch: --x64
           - os: ubuntu-latest
             platform: linux
 
@@ -69,7 +67,6 @@ jobs:
           files: |
             artifacts/release-windows-latest/*
             artifacts/release-macos-latest/*
-            artifacts/release-macos-13/*
             artifacts/release-ubuntu-latest/*
           generate_release_notes: true
         env:
