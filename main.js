@@ -251,9 +251,15 @@ function createTray() {
   }
 
   tray = new Tray(icon);
-  tray.setToolTip('Aura Alpha v8.0.0');
+  const appVersion = app.getVersion();
+  tray.setToolTip(`Aura Alpha v${appVersion}`);
 
   const contextMenu = Menu.buildFromTemplate([
+    {
+      label: `Aura Alpha v${appVersion}`,
+      enabled: false,
+    },
+    { type: 'separator' },
     {
       label: 'Show',
       click: () => {
@@ -274,6 +280,29 @@ function createTray() {
           mainWindow.show();
           mainWindow.webContents.send('worker-log', msg);
         }
+      },
+    },
+    {
+      label: 'About',
+      click: () => {
+        const chromium = process.versions.chrome || '?';
+        const electron = process.versions.electron || '?';
+        const node = process.versions.node || '?';
+        const detail = [
+          `Aura Alpha Desktop v${appVersion}`,
+          `Electron ${electron}`,
+          `Chromium ${chromium}`,
+          `Node ${node}`,
+          `Platform ${process.platform} ${process.arch}`,
+        ].join('\n');
+        const { dialog } = require('electron');
+        dialog.showMessageBox(mainWindow || null, {
+          type: 'info',
+          title: 'About Aura Alpha',
+          message: `Aura Alpha Desktop v${appVersion}`,
+          detail,
+          buttons: ['OK'],
+        });
       },
     },
     { type: 'separator' },
