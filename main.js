@@ -421,19 +421,30 @@ async function handleNetworkBlock(probes) {
     title: 'Network Connection Blocked',
     message: 'AuraAlpha cannot reach our servers',
     detail,
-    buttons: ['Set Custom Server URL', 'Open Help Page', 'Retry', 'Continue Anyway'],
+    buttons: [
+      'Install Cloudflare WARP (1-click fix)',
+      'Set Custom Server URL',
+      'Open Help Page',
+      'Retry',
+      'Continue Anyway',
+    ],
     defaultId: 0,
-    cancelId: 3,
+    cancelId: 4,
   });
 
   if (result.response === 0) {
-    // Set custom URL — prompt for input via a small renderer page
+    // Tier 2: recommend Cloudflare WARP. Free 1-click VPN that tunnels DNS+
+    // traffic through Cloudflare, defeats most consumer-grade content filters,
+    // and is legitimate (no Tor stigma). After install + reboot the worker
+    // will register against auraalpha.cc directly with no further config.
+    shell.openExternal('https://1.1.1.1/');
+  } else if (result.response === 1) {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('open-network-settings');
     }
-  } else if (result.response === 1) {
-    shell.openExternal('https://auraalpha.cc/help/network-block');
   } else if (result.response === 2) {
+    shell.openExternal('https://auraalpha.cc/help/network-block');
+  } else if (result.response === 3) {
     const re = await networkConfig.resolveServerUrl();
     if (re.url) {
       API_BASE = re.url;
