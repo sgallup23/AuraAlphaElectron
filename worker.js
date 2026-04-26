@@ -11,7 +11,7 @@ let restartCount = 0;
 let logCallback = null;
 
 const MAX_RESTARTS = 3;
-const COORDINATOR_URL = 'https://auraalpha.cc';
+const DEFAULT_COORDINATOR_URL = 'https://auraalpha.cc';
 
 // ── Find Python executable ────────────────────────────────────────────
 function findPython() {
@@ -89,7 +89,10 @@ function parseOutput(data) {
 }
 
 // ── Start worker ──────────────────────────────────────────────────────
-function startWorker(mode, onLog) {
+// `coordinatorUrl` is passed in by main.js after network-config resolves the
+// best reachable endpoint (handles xFi/SafeDNS-style network filters by
+// falling through primary → backup → direct IP → user-supplied tunnel URL).
+function startWorker(mode, onLog, coordinatorUrl) {
   if (workerProcess) {
     return { success: false, error: 'Worker already running' };
   }
@@ -109,9 +112,13 @@ function startWorker(mode, onLog) {
   jobsCompleted = 0;
   workerStartTime = Date.now();
 
+  const url = (coordinatorUrl && typeof coordinatorUrl === 'string' && coordinatorUrl.trim())
+    ? coordinatorUrl.trim()
+    : DEFAULT_COORDINATOR_URL;
+
   const args = [
     script,
-    '--coordinator-url', COORDINATOR_URL,
+    '--coordinator-url', url,
     '--mode', workerMode,
     '--max-parallel', '20',
   ];

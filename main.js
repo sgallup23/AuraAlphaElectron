@@ -14,6 +14,7 @@ const fs = require('fs');
 const os = require('os');
 const { initUpdater } = require('./updater');
 const { startWorker, stopWorker, getStatus: getWorkerStatus } = require('./worker');
+const networkConfig = require('./network-config');
 
 // ── Single instance lock ──────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock();
@@ -26,7 +27,12 @@ const userDataPath = app.getPath('userData');
 const stateFile = path.join(userDataPath, 'window-state.json');
 const isDev = !app.isPackaged;
 const DIST_PATH = path.join(__dirname, 'dist');
-const API_BASE = 'https://auraalpha.cc';
+// API_BASE is resolved at startup by network-config.js (handles xFi/SafeDNS-style
+// content filters, falls through primary → backup hostnames → direct EC2 IP →
+// user-supplied custom URL). Default keeps the public hostname so dev/source
+// builds still work before the resolver runs.
+let API_BASE = networkConfig.PRIMARY_URL;
+let API_SOURCE = 'primary';
 const SCHEME = 'aura';
 
 // ── Window state persistence ──────────────────────────────────────────
@@ -334,7 +340,7 @@ function registerIPC() {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('worker-log', msg);
       }
-    });
+    }, API_BASE);
   });
 
   ipcMain.handle('stop-worker', () => stopWorker());
@@ -352,10 +358,114 @@ function registerIPC() {
       gpu: 'Use chrome://gpu in DevTools to check',
     };
   });
+
+  // ── Network config IPC (Tier 1: block detection + custom server URL) ─
+  ipcMain.handle('network-get-status', () => ({
+    apiBase: API_BASE,
+    source: API_SOURCE,
+    settings: networkConfig.loadSettings(),
+  }));
+
+  ipcMain.handle('network-get-settings', () => networkConfig.loadSettings());
+
+  ipcMain.handle('network-save-settings', async (_, settings) => {
+    const saved = networkConfig.saveSettings(settings || {});
+    // Re-resolve immediately so the change takes effect without a restart
+    const resolved = await networkConfig.resolveServerUrl();
+    if (resolved.url) {
+      API_BASE = resolved.url;
+      API_SOURCE = resolved.source;
+    }
+    return { saved, apiBase: API_BASE, source: API_SOURCE };
+  });
+
+  ipcMain.handle('network-test-url', (_, url) => networkConfig.testCustomUrl(url));
+
+  ipcMain.handle('network-resolve', async () => {
+    const resolved = await networkConfig.resolveServerUrl();
+    if (resolved.url) {
+      API_BASE = resolved.url;
+      API_SOURCE = resolved.source;
+    }
+    return resolved;
+  });
+}
+
+// ── Friendly block-detection modal ───────────────────────────────────
+async function handleNetworkBlock(probes) {
+  const { dialog, shell } = require('electron');
+  const ssl = probes.find((p) => p.errorClass === 'ssl_intercept');
+  const redirect = probes.find((p) => p.errorClass === 'http_redirect');
+  const dns = probes.find((p) => p.errorClass === 'dns_block');
+
+  let cause = 'Your network is blocking AuraAlpha.';
+  if (ssl) cause = 'A content filter on your network is intercepting our HTTPS connection (xFi Advanced Security, Norton Family, or similar).';
+  else if (redirect) cause = 'A DNS-based filter on your network is redirecting AuraAlpha to a block page.';
+  else if (dns) cause = 'A DNS filter on your network is blocking AuraAlpha entirely.';
+
+  const detail = [
+    cause,
+    '',
+    'Common fixes:',
+    '  • Xfinity xFi → app → WiFi → Advanced Security → disable for this device',
+    '  • Eero → Eero app → Discover → Eero Secure → Block & allow → allow auraalpha.cc',
+    '  • Router family-safety → admin panel → allowlist auraalpha.cc',
+    '  • Or click "Set Custom Server URL" to enter a tunnel/VPN endpoint',
+    '',
+    'Probes attempted:',
+    ...probes.map((p) => `  • ${p.source}: ${p.url} → ${p.ok ? 'OK' : (p.errorClass || 'fail') + ' (' + (p.error || '?') + ')'}`),
+  ].join('\n');
+
+  const result = await dialog.showMessageBox({
+    type: 'warning',
+    title: 'Network Connection Blocked',
+    message: 'AuraAlpha cannot reach our servers',
+    detail,
+    buttons: ['Set Custom Server URL', 'Open Help Page', 'Retry', 'Continue Anyway'],
+    defaultId: 0,
+    cancelId: 3,
+  });
+
+  if (result.response === 0) {
+    // Set custom URL — prompt for input via a small renderer page
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('open-network-settings');
+    }
+  } else if (result.response === 1) {
+    shell.openExternal('https://auraalpha.cc/help/network-block');
+  } else if (result.response === 2) {
+    const re = await networkConfig.resolveServerUrl();
+    if (re.url) {
+      API_BASE = re.url;
+      API_SOURCE = re.source;
+    } else {
+      handleNetworkBlock(re.probes);
+    }
+  }
+}
+
+// ── Startup probe — runs after app.ready (loadSettings needs userData path) ─
+async function probeAndResolveAtStartup() {
+  const resolved = await networkConfig.resolveServerUrl();
+  if (resolved.url) {
+    API_BASE = resolved.url;
+    API_SOURCE = resolved.source;
+    if (resolved.source !== 'primary') {
+      const settings = networkConfig.loadSettings();
+      networkConfig.saveSettings({ ...settings, lastWorkingUrl: resolved.url });
+    }
+    return;
+  }
+  setTimeout(() => handleNetworkBlock(resolved.probes), 1500);
 }
 
 // ── App lifecycle ────────────────────────────────────────────────────
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Probe in parallel with window setup; race a 6s timeout so a slow filter
+  // doesn't block the UI from painting.
+  const probePromise = probeAndResolveAtStartup();
+  await Promise.race([probePromise, new Promise((r) => setTimeout(r, 6000))]);
+
   setupProtocol();
   setupCorsBypass();
   registerIPC();
