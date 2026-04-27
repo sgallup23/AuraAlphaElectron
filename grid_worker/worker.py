@@ -1397,177 +1397,59 @@ def _get_torch_device() -> "torch.device":
 
 
 def run_ml_train_job(job_dict: dict, cache_dir: Path) -> dict:
-    """Execute an ML training job. Uses GPU when available, falls back to CPU.
+    """Execute ml_train via prodesk\'s train_strategy_model_v2 (XGB+LGBM ensemble
+    with Optuna HPO). Replaces the legacy LSTM handler that expected
+    {symbol_universe, model_config} payloads — those have not been dispatched
+    since 2026-04-15. Production dispatcher emits {strategy, region, trials}.
 
-    Expects job_dict keys:
-      - job_id: str
-      - model_config: dict with architecture, hyperparameters
-      - training_data: dict or reference to data on coordinator
-      - epochs: int (default 10)
-      - symbol_universe: list[str] (for feature building from cached OHLCV)
-    """
+    For sustained-GPU TCN training, see run_deep_train_job."""
     job_id = job_dict.get("job_id", "unknown")
     t0 = time.time()
+    payload = _unpack_payload(job_dict)
+    strategy = payload.get("strategy", "")
+    region = payload.get("region", "us")
+    trials = int(payload.get("trials", 30))
 
+    if not strategy:
+        return {"job_id": job_id, "status": "failed",
+                "error": "ml_train payload missing strategy",
+                "execution_time": round(time.time()-t0, 2)}
+
+    base = _resolve_prodesk_base() if "_resolve_prodesk_base" in globals() else None
+    if base is None:
+        try:
+            from .standalone.job_router import BASE as base
+        except Exception:
+            base = None
+    if base is None:
+        return {"job_id": job_id, "status": "failed",
+                "error": "prodesk BASE not found",
+                "execution_time": round(time.time()-t0, 2)}
+
+    if str(base) not in sys.path:
+        sys.path.insert(0, str(base))
     try:
-        import torch
-        import torch.nn as nn
-
-        device = _get_torch_device()
-        if device.type == "cuda":
-            log.info("[GPU] Using %s for ML training job %s", _GPU_NAME, job_id)
-        else:
-            log.info("[CPU] GPU not available, using CPU for ML training job %s", job_id)
-
-        model_config = job_dict.get("model_config", {})
-        epochs = job_dict.get("epochs", model_config.get("epochs", 10))
-        learning_rate = model_config.get("learning_rate", 0.001)
-        batch_size = model_config.get("batch_size", 64)
-        hidden_size = model_config.get("hidden_size", 128)
-        num_layers = model_config.get("num_layers", 2)
-        input_features = model_config.get("input_features", 5)
-        sequence_length = model_config.get("sequence_length", 20)
-        symbol_universe = job_dict.get("symbol_universe", [])
-        region = job_dict.get("backtest_config", {}).get("region", "us")
-
-        # --- Build training tensors from cached OHLCV data ---
-        import numpy as np
-
-        all_features = []
-        all_targets = []
-
-        for symbol in symbol_universe:
-            bars = _load_bars(symbol, region, cache_dir)
-            if bars is None or len(bars["closes"]) < sequence_length + 10:
-                continue
-
-            closes = bars["closes"]
-            highs = bars["highs"]
-            lows = bars["lows"]
-            volumes = bars["volumes"]
-
-            # Feature matrix: returns, high-low range, volume change, RSI-like, volatility
-            returns = np.diff(closes) / (closes[:-1] + 1e-10)
-            hl_range = (highs[1:] - lows[1:]) / (closes[1:] + 1e-10)
-            vol_change = np.diff(volumes) / (volumes[:-1] + 1e-10)
-            vol_change = np.clip(vol_change, -10, 10)
-
-            # Align arrays (all length n-1)
-            n = min(len(returns), len(hl_range), len(vol_change))
-            returns = returns[:n]
-            hl_range = hl_range[:n]
-            vol_change = vol_change[:n]
-
-            # Simple rolling volatility and momentum
-            volatility = np.zeros(n)
-            momentum = np.zeros(n)
-            for i in range(14, n):
-                volatility[i] = np.std(returns[i - 14:i])
-                momentum[i] = np.mean(returns[i - 14:i])
-
-            feat = np.column_stack([returns, hl_range, vol_change, volatility, momentum])
-
-            # Build sequences
-            for i in range(sequence_length, n - 1):
-                seq = feat[i - sequence_length:i, :input_features]
-                target = 1.0 if returns[i] > 0 else 0.0
-                all_features.append(seq)
-                all_targets.append(target)
-
-        if not all_features:
-            return {
-                "job_id": job_id,
-                "status": "failed",
-                "error": "No training data could be built from symbol universe",
-                "execution_time": round(time.time() - t0, 2),
-            }
-
-        X = torch.tensor(np.array(all_features), dtype=torch.float32).to(device)
-        y = torch.tensor(np.array(all_targets), dtype=torch.float32).to(device)
-
-        log.info("[ML] Training data: %d samples, %d features, seq_len=%d, device=%s",
-                 len(X), input_features, sequence_length, device)
-
-        # --- Simple LSTM model ---
-        class _LSTMModel(nn.Module):
-            def __init__(self, inp, hidden, layers):
-                super().__init__()
-                self.lstm = nn.LSTM(inp, hidden, layers, batch_first=True, dropout=0.2 if layers > 1 else 0.0)
-                self.fc = nn.Linear(hidden, 1)
-                self.sigmoid = nn.Sigmoid()
-
-            def forward(self, x):
-                out, _ = self.lstm(x)
-                out = self.fc(out[:, -1, :])
-                return self.sigmoid(out).squeeze(-1)
-
-        model = _LSTMModel(input_features, hidden_size, num_layers).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-        criterion = nn.BCELoss()
-
-        # --- Training loop ---
-        dataset = torch.utils.data.TensorDataset(X, y)
-        loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-        train_losses = []
-        for epoch in range(epochs):
-            model.train()
-            epoch_loss = 0.0
-            batches = 0
-            for xb, yb in loader:
-                optimizer.zero_grad()
-                pred = model(xb)
-                loss = criterion(pred, yb)
-                loss.backward()
-                optimizer.step()
-                epoch_loss += loss.item()
-                batches += 1
-            avg_loss = epoch_loss / max(batches, 1)
-            train_losses.append(round(avg_loss, 6))
-
-        # --- Evaluate ---
-        model.eval()
-        with torch.no_grad():
-            preds = model(X)
-            predicted_classes = (preds > 0.5).float()
-            accuracy = (predicted_classes == y).float().mean().item()
-
+        from phase2.app.services.ml_trainer_v2 import train_strategy_model_v2
+        result = train_strategy_model_v2(strategy, region, n_trials=trials)
         elapsed = round(time.time() - t0, 2)
-        log.info("[ML] Training complete: %d epochs, loss=%.4f, accuracy=%.2f%%, %.1fs on %s",
-                 epochs, train_losses[-1] if train_losses else 0, accuracy * 100, elapsed, device)
-
-        return {
-            "job_id": job_id,
-            "status": "completed",
-            "metrics": {
-                "epochs": epochs,
-                "final_loss": train_losses[-1] if train_losses else None,
-                "accuracy": round(accuracy * 100, 2),
-                "train_losses": train_losses,
-                "samples": len(X),
-                "device": str(device),
-                "gpu_name": _GPU_NAME if device.type == "cuda" else None,
-                "model_params": sum(p.numel() for p in model.parameters()),
-                "symbols_used": len(symbol_universe),
-            },
-            "execution_time": elapsed,
-        }
-
-    except ImportError as e:
-        return {
-            "job_id": job_id,
-            "status": "failed",
-            "error": f"PyTorch not installed: {e}",
-            "execution_time": round(time.time() - t0, 2),
-        }
+        if result:
+            return {"job_id": job_id, "status": "completed",
+                    "metrics": {"strategy": strategy, "region": region,
+                                "accuracy": result.get("accuracy", 0),
+                                "auc_roc": result.get("auc_roc", 0),
+                                "train_samples": result.get("train_samples", 0),
+                                "gpu_used": result.get("gpu_used", False),
+                                "n_trials": trials},
+                    "execution_time": elapsed}
+        return {"job_id": job_id, "status": "failed",
+                "error": f"train_strategy_model_v2 returned None for {strategy} ({region}) — insufficient data or split too small",
+                "execution_time": elapsed}
     except Exception as e:
-        return {
-            "job_id": job_id,
-            "status": "failed",
-            "error": f"{type(e).__name__}: {e}",
-            "traceback": traceback.format_exc(),
-            "execution_time": round(time.time() - t0, 2),
-        }
+        import traceback as _tb
+        return {"job_id": job_id, "status": "failed",
+                "error": f"{type(e).__name__}: {e}",
+                "traceback": _tb.format_exc()[-500:],
+                "execution_time": round(time.time() - t0, 2)}
 
 
 def run_deep_train_job(job_dict: dict, cache_dir: Path) -> dict:
