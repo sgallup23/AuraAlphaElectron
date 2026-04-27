@@ -97,6 +97,8 @@ def route_job(job_dict: Dict[str, Any], cache_dir: Path) -> Dict[str, Any]:
             result = _run_optimization(payload, cache_dir)
         elif job_type == "alpha_factory":
             result = _run_alpha_factory(payload, cache_dir)
+        elif job_type == "deep_train":
+            result = _run_deep_train(payload)
         elif job_type == "ohlcv_refresh":
             result = _run_ohlcv_refresh(payload)
         else:
@@ -198,6 +200,31 @@ def _run_ml_train(payload: Dict) -> Dict:
         [sys.executable, str(BASE / "scripts" / "train_loop.py"),
          "--strategy", strategy, "--trials", str(trials)],
         timeout=600,
+    )
+
+
+def _run_deep_train(payload: Dict) -> Dict:
+    """Train the deep signal TCN model.
+
+    Payload: {epochs?: int, lr?: float, batch_size?: int, max_symbols?: int}
+    Long-running (~5-30 min on a 4090). Subprocess-invokes
+    scripts/train_deep_signal.py which builds dataset + trains TCN +
+    saves to state/ml_models/deep_signal.pt. GPU-saturating.
+    """
+    if not BASE:
+        return {"status": "failed", "error": "Project base not found"}
+
+    epochs = int(payload.get("epochs", 50))
+    lr = float(payload.get("lr", 0.0003))
+    batch_size = int(payload.get("batch_size", 64))
+    max_symbols = int(payload.get("max_symbols", 200))
+
+    return _run_subprocess(
+        "deep_train",
+        [sys.executable, str(BASE / "scripts" / "train_deep_signal.py"),
+         "--epochs", str(epochs), "--lr", str(lr),
+         "--batch-size", str(batch_size)],
+        timeout=3600,
     )
 
 

@@ -1570,6 +1570,58 @@ def run_ml_train_job(job_dict: dict, cache_dir: Path) -> dict:
         }
 
 
+def run_deep_train_job(job_dict: dict, cache_dir: Path) -> dict:
+    """Execute a TCN (Temporal Convolutional Network) training job for the
+    global deep_signal model. Subprocess-invokes scripts/train_deep_signal.py
+    which already has the dataset + GPU + checkpoint pipeline. GPU-saturating
+    workload (~5-30 min on a 4090).
+
+    Payload (all optional):
+      - epochs: int (default 50)
+      - lr: float (default 0.0003)
+      - batch_size: int (default 64)
+    """
+    import subprocess
+    job_id = job_dict.get("job_id", "unknown")
+    t0 = time.time()
+    payload = _unpack_payload(job_dict)
+    epochs = int(payload.get("epochs", 50))
+    lr = float(payload.get("lr", 0.0003))
+    batch_size = int(payload.get("batch_size", 64))
+
+    base = _resolve_prodesk_base() if "_resolve_prodesk_base" in globals() else None
+    if base is None:
+        try:
+            from .standalone.job_router import BASE as base
+        except Exception:
+            base = None
+    if base is None:
+        return {"job_id": job_id, "status": "failed",
+                "error": "prodesk BASE not found", "execution_time": round(time.time()-t0, 2)}
+
+    cmd = [sys.executable, str(Path(base) / "scripts" / "train_deep_signal.py"),
+           "--epochs", str(epochs), "--lr", str(lr), "--batch-size", str(batch_size)]
+    log.info("[deep_train] %s starting: %s", job_id, " ".join(cmd))
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        elapsed = round(time.time() - t0, 2)
+        if result.returncode == 0:
+            return {"job_id": job_id, "status": "completed",
+                    "metrics": {"epochs": epochs, "lr": lr, "batch_size": batch_size,
+                                "stdout_tail": result.stdout[-500:]},
+                    "execution_time": elapsed}
+        return {"job_id": job_id, "status": "failed",
+                "error": (result.stderr or result.stdout)[-500:],
+                "execution_time": elapsed}
+    except subprocess.TimeoutExpired:
+        return {"job_id": job_id, "status": "failed", "error": "deep_train timed out (>1h)",
+                "execution_time": round(time.time() - t0, 2)}
+    except Exception as e:
+        return {"job_id": job_id, "status": "failed",
+                "error": f"{type(e).__name__}: {e}",
+                "execution_time": round(time.time() - t0, 2)}
+
+
 def run_ml_predict_job(job_dict: dict, cache_dir: Path) -> dict:
     """Execute an ML prediction/inference job. Uses GPU when available.
 
@@ -1804,10 +1856,11 @@ _JOB_HANDLERS = {
     "ml_train": run_ml_train_job,
     "ml_predict": run_ml_predict_job,
     "optimization": run_optimization_job,
+    "deep_train": run_deep_train_job,
 }
 
 # Job types that benefit from GPU acceleration
-_GPU_JOB_TYPES = {"ml_train", "ml_predict", "optimization"}
+_GPU_JOB_TYPES = {"ml_train", "ml_predict", "optimization", "deep_train"}
 
 
 def _unpack_payload(job_dict: dict) -> dict:

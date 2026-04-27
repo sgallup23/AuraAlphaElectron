@@ -11,7 +11,9 @@ let restartCount = 0;
 let logCallback = null;
 
 const MAX_RESTARTS = 3;
-const DEFAULT_COORDINATOR_URL = 'https://auraalpha.cc';
+// Tailnet-first default. main.js passes the resolved URL after probing, so
+// this is only used if the resolver hasn't run yet (rare).
+const DEFAULT_COORDINATOR_URL = 'http://prodesk-ec2:8020';
 
 // ── Find Python executable ────────────────────────────────────────────
 function findPython() {

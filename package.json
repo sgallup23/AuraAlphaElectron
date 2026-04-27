@@ -1,7 +1,11 @@
 {
   "name": "aura-alpha-desktop",
-  "version": "9.4.4",
+  "version": "9.4.6",
+<<<<<<< HEAD
+  "description": "Aura Alpha — Autonomous Trading Intelligence Platform",
+=======
   "description": "Aura Alpha \u2014 Autonomous Trading Intelligence Platform",
+>>>>>>> c599595 (feat(v9.4.5): deep_train job_type for GPU-saturating TCN training)
   "author": {
     "name": "Aura Holdings LLC",
     "email": "shawn@auraalpha.cc"
