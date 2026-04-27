@@ -1,5 +1,9 @@
 # Aura Alpha Grid Worker — Dependencies
 # Install: pip install -r requirements.txt
+#
+# Note: when running inside the Electron app, worker.js auto-installs these
+# via `pip install --user` on every launch. This file is the source of truth
+# for manual installers (run.sh, setup.sh) and CI.
 
 # Core (required)
 psutil>=5.9.0
@@ -9,12 +13,25 @@ pyyaml>=6.0
 # Compute (for backtest/ML jobs)
 numpy>=1.24.0
 polars>=0.20.0
+scipy>=1.11.0
 
 # Data (for OHLCV fetching in standalone mode)
 yfinance>=0.2.0
 
-# GPU / ML (optional but recommended)
-# Install CUDA version for NVIDIA GPU support:
+# ML training (for ml_train jobs — used by phase2/app/services/ml_trainer_v2.py)
+# Without these, ml_train jobs claim successfully but crash on `import xgboost`
+# and return the misleading "insufficient data or split too small" error.
+# Caused fleet-wide ml_train stall through 2026-04-27.
+xgboost>=3.0.0
+lightgbm>=4.5.0
+optuna>=4.0.0
+scikit-learn>=1.4.0
+
+# GPU / ML torch — installed separately by Electron worker.js when
+# nvidia-smi detects a GPU. Manual installers can uncomment one of the
+# lines below depending on the target machine:
+#
+# CUDA 12.4 (recommended for RTX 30/40-series and newer):
 #   pip install torch --index-url https://download.pytorch.org/whl/cu124
-# Or CPU-only:
+# CPU-only fallback:
 #   pip install torch
