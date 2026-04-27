@@ -7,6 +7,11 @@ const { URL } = require('url');
 const { app } = require('electron');
 
 // ── Constants ─────────────────────────────────────────────────────────
+// Tailscale-routed endpoint — preferred for the fleet during the Google +
+// Microsoft reputation warmup (see memory: aura_alpha_tailscale_routing_2026_04_27).
+// MagicDNS resolves only inside the tailnet, so non-tailnet clients fail fast
+// (dns_block) and fall through to PRIMARY_URL transparently.
+const TAILSCALE_URL = 'http://prodesk-ec2:8020';
 const PRIMARY_URL = 'https://auraalpha.cc';
 // Backup hostnames — fill in once registered. main.js auto-tries each in order.
 // Tailnet hostname (Tailscale magicDNS) is a backup so workers on the tailnet
@@ -224,17 +229,22 @@ async function resolveServerUrl() {
     if (hit) return { ...hit, probes };
   }
 
-  // 2. Primary
+  // 2. Tailscale (MagicDNS) — preferred during reputation warmup. Fails fast
+  //    (DNS lookup error) on non-tailnet clients, then falls through to primary.
+  const tailscale = await tryUrl(TAILSCALE_URL, 'tailscale');
+  if (tailscale) return { ...tailscale, probes };
+
+  // 3. Primary
   const primary = await tryUrl(PRIMARY_URL, 'primary');
   if (primary) return { ...primary, probes };
 
-  // 3. Each backup hostname in turn
+  // 4. Each backup hostname in turn
   for (const backup of BACKUP_URLS) {
     const hit = await tryUrl(backup, 'backup');
     if (hit) return { ...hit, probes };
   }
 
-  // 4. Direct EC2 IP — last resort
+  // 5. Direct EC2 IP — last resort
   const direct = await tryUrl(DIRECT_IP_URL, 'direct');
   if (direct) return { ...direct, probes };
 
@@ -256,6 +266,7 @@ async function testCustomUrl(url) {
 }
 
 module.exports = {
+  TAILSCALE_URL,
   PRIMARY_URL,
   BACKUP_URLS,
   DIRECT_IP_URL,

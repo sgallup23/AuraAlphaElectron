@@ -28,12 +28,12 @@ const userDataPath = app.getPath('userData');
 const stateFile = path.join(userDataPath, 'window-state.json');
 const isDev = !app.isPackaged;
 const DIST_PATH = path.join(__dirname, 'dist');
-// API_BASE is resolved at startup by network-config.js (handles xFi/SafeDNS-style
-// content filters, falls through primary → backup hostnames → direct EC2 IP →
-// user-supplied custom URL). Default keeps the public hostname so dev/source
-// builds still work before the resolver runs.
-let API_BASE = networkConfig.PRIMARY_URL;
-let API_SOURCE = 'primary';
+// API_BASE is resolved at startup by network-config.js. Resolve order:
+// custom → tailscale → primary → backups → direct IP. Default to TAILSCALE_URL
+// so the fleet hits the tailnet first during the Google + Microsoft reputation
+// warmup; non-tailnet clients fall through transparently.
+let API_BASE = networkConfig.TAILSCALE_URL;
+let API_SOURCE = 'tailscale';
 const SCHEME = 'aura';
 
 // ── Window state persistence ──────────────────────────────────────────
