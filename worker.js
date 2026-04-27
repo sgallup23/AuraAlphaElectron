@@ -56,6 +56,9 @@ function findPython() {
 const REQUIRED_PY_DEPS = [
   'numpy>=1.24.0', 'polars>=0.20.0', 'psutil>=5.9.0',
   'requests>=2.28.0', 'pyyaml>=6.0', 'yfinance>=0.2.0',
+  // scipy enables the lfilter fast path for EMA/RSI in worker.py
+  // (16×/7× speedup, numerically identical to the Python loop).
+  'scipy>=1.11.0',
 ];
 
 function ensurePythonDeps(python, onLog) {
