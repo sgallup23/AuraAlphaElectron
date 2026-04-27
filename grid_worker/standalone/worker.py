@@ -242,6 +242,18 @@ class StandaloneWorker:
         # Start heartbeat thread
         self._start_heartbeat()
 
+        # Optional bias to specific job types — comma-separated env var.
+        # Example: AURA_JOB_TYPES=ml_train (or "ml_train,optimization").
+        # Used during the 2026-04-27 GPU-fleet triage to force 4090 boxes
+        # to drain the ml_train backlog. Unset → pull any job type.
+        _jt_env = os.environ.get("AURA_JOB_TYPES", "").strip()
+        _job_types_filter = (
+            [t.strip() for t in _jt_env.split(",") if t.strip()]
+            if _jt_env else None
+        )
+        if _job_types_filter:
+            log.info("AURA_JOB_TYPES filter active: %s", _job_types_filter)
+
         # Main dequeue-execute loop with exponential backoff on idle
         idle_backoff = 1  # seconds
         max_backoff = 30
@@ -262,8 +274,11 @@ class StandaloneWorker:
                         if self._shutdown.is_set():
                             break
 
-                # Dequeue a batch
-                jobs = self.client.dequeue(count=batch_count)
+                # Dequeue a batch (optionally filtered by AURA_JOB_TYPES env)
+                jobs = self.client.dequeue(
+                    count=batch_count,
+                    job_types=_job_types_filter,
+                )
 
                 if not jobs:
                     # No work available — back off

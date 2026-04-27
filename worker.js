@@ -59,17 +59,70 @@ const REQUIRED_PY_DEPS = [
   // scipy enables the lfilter fast path for EMA/RSI in worker.py
   // (16×/7× speedup, numerically identical to the Python loop).
   'scipy>=1.11.0',
+  // ml_train trio + scikit-learn — required by phase2/app/services/ml_trainer_v2.py.
+  // Without these the Electron worker claims ml_train jobs and crashes on
+  // `import xgboost`, returning the misleading "insufficient data" error
+  // from job_router.py. Caused fleet-wide ml_train stall through 2026-04-27.
+  'xgboost>=3.0.0', 'lightgbm>=4.5.0', 'optuna>=4.0.0', 'scikit-learn>=1.4.0',
 ];
 
 function ensurePythonDeps(python, onLog) {
   try {
     const { execFileSync } = require('child_process');
     onLog && onLog('[worker] Checking Python dependencies...');
+
+    // Step 1: install the always-required base set (CPU-only deps).
     execFileSync(
       python,
       ['-m', 'pip', 'install', '--user', '--quiet', '--disable-pip-version-check', ...REQUIRED_PY_DEPS],
-      { stdio: 'pipe', timeout: 120000 },
+      { stdio: 'pipe', timeout: 180000 },
     );
+
+    // Step 2: if NVIDIA GPU present, ensure torch+CUDA is installed.
+    // Skip on CPU-only boxes — the torch CUDA wheel is ~2.5 GB and pulling it
+    // onto every laptop without a discrete GPU is wasteful. Probe nvidia-smi
+    // first; only install if a GPU is detected AND torch isn't already
+    // importable with cuda.
+    let hasGpu = false;
+    try {
+      const probeCmd = process.platform === 'win32' ? 'nvidia-smi.exe' : 'nvidia-smi';
+      execFileSync(probeCmd, ['--query-gpu=name', '--format=csv,noheader'],
+                   { stdio: 'pipe', timeout: 5000 });
+      hasGpu = true;
+    } catch (_) { /* no NVIDIA GPU present — skip torch install */ }
+
+    if (hasGpu) {
+      let torchOk = false;
+      try {
+        execFileSync(
+          python,
+          ['-c', 'import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)'],
+          { stdio: 'pipe', timeout: 10000 },
+        );
+        torchOk = true;
+        onLog && onLog('[worker] torch+CUDA already present');
+      } catch (_) { /* torch missing or CPU-only build — install */ }
+
+      if (!torchOk) {
+        onLog && onLog('[worker] Installing torch+CUDA (~2.5GB; may take several minutes on first run)...');
+        try {
+          execFileSync(
+            python,
+            ['-m', 'pip', 'install', '--user', '--quiet', '--disable-pip-version-check',
+             'torch',
+             '--index-url', 'https://download.pytorch.org/whl/cu124'],
+            { stdio: 'pipe', timeout: 600000 }, // 10-min budget for first install
+          );
+          onLog && onLog('[worker] torch+CUDA installed');
+        } catch (e) {
+          const m = (e && e.stderr) ? e.stderr.toString().slice(0, 400) : String(e).slice(0, 400);
+          onLog && onLog(`[worker] torch+CUDA install failed (continuing on CPU): ${m}`);
+        }
+      }
+    } else {
+      onLog && onLog('[worker] No NVIDIA GPU detected, skipping torch+CUDA install');
+    }
+
     onLog && onLog('[worker] Python dependencies satisfied');
     return true;
   } catch (err) {
@@ -164,6 +217,11 @@ function startWorker(mode, onLog, coordinatorUrl) {
     '--max-parallel', '20',
   ];
 
+  // Optional bias to specific job types: set AURA_JOB_TYPES (comma-separated,
+  // e.g. "ml_train" or "ml_train,optimization") in process env to force this
+  // worker to only pull those job types. Used during the 2026-04-27 GPU-fleet
+  // triage to confirm 4090 boxes had bandwidth for ml_train. Honored by
+  // grid_worker/standalone/worker.py at the dequeue call site.
   const env = { ...process.env, BATCH_SIZE: '25' };
 
   try {

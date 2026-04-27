@@ -117,15 +117,28 @@ class CoordinatorClient:
         })
         return resp.json()
 
-    def dequeue(self, count: int = 5) -> List[Dict[str, Any]]:
+    def dequeue(self, count: int = 5, job_types: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Request a batch of jobs from the coordinator.
 
-        Returns list of job dicts, possibly empty if no work available.
+        Args:
+            count: Max number of jobs to dequeue.
+            job_types: Optional list of job_type filters (e.g. ["ml_train"]).
+                When set, the coordinator skips other job types so this worker
+                can be biased to specific work (used during the 2026-04-27 GPU
+                fleet triage to force 4090 boxes to drain ml_train backlog).
+                The companion server-side filter is in
+                `phase2/app/routes/grid_contributor.py`.
+
+        Returns:
+            List of job dicts, possibly empty if no work available.
         """
-        resp = self._request("POST", "dequeue", json={
+        body: Dict[str, Any] = {
             "worker_id": self.worker_id,
             "count": count,
-        })
+        }
+        if job_types:
+            body["job_types"] = list(job_types)
+        resp = self._request("POST", "dequeue", json=body)
         data = resp.json()
         return data.get("jobs", [])
 
