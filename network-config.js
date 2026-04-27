@@ -1,12 +1,20 @@
 const { net } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+const https = require('https');
+const { URL } = require('url');
 const { app } = require('electron');
 
 // ── Constants ─────────────────────────────────────────────────────────
 const PRIMARY_URL = 'https://auraalpha.cc';
 // Backup hostnames — fill in once registered. main.js auto-tries each in order.
+// Tailnet hostname (Tailscale magicDNS) is a backup so workers on the tailnet
+// route around ISP-level filtering of auraalpha.cc without any user config.
+// Only resolves when the local machine is on the tailnet, so it's harmless
+// for users who aren't.
 const BACKUP_URLS = [
+  'http://prodesk-ec2.tail62e000.ts.net:8020',
   // 'https://aura-trading.com',
   // 'https://auraalpha.app',
 ];
@@ -56,6 +64,77 @@ function saveSettings(settings) {
 //   'timeout'          — slow filter / captive portal
 //   'http_error'       — server reachable but returned non-2xx (probably fine)
 async function probeUrl(url, timeoutMs = 6000) {
+  // First try via Node's native http(s) — bypasses Chromium's net stack and
+  // therefore Cloudflare WARP, which RSTs Tailscale-CGNAT IPs even when the
+  // OS routes them correctly. If Node-native succeeds, the URL works.
+  // If it fails, fall through to Electron's net.request as a second opinion
+  // (some corp filters block Node's user-agent but allow Chromium's).
+  const nodeResult = await probeViaNode(url, timeoutMs);
+  if (nodeResult.ok) return nodeResult;
+  const electronResult = await probeViaElectronNet(url, timeoutMs);
+  if (electronResult.ok) return electronResult;
+  // Return the more informative of the two failures (Node usually has the
+  // better errorClass since it doesn't get filtered by WARP).
+  return nodeResult;
+}
+
+// ── Probe via Node's native http/https ────────────────────────────
+// This goes straight through the Win32 socket layer, bypassing Chromium
+// (and therefore bypassing Cloudflare WARP, which intercepts Chromium
+// traffic and resets connections to private/CGNAT IPs like Tailscale).
+function probeViaNode(url, timeoutMs) {
+  const started = Date.now();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve({ ms: Date.now() - started, ...result });
+    };
+    let parsed;
+    try { parsed = new URL(`${url}/api/health`); }
+    catch (err) {
+      return finish({ ok: false, errorClass: 'connection', error: err.message });
+    }
+    const lib = parsed.protocol === 'https:' ? https : http;
+    const req = lib.request({
+      method: 'GET',
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: parsed.pathname + (parsed.search || ''),
+      timeout: timeoutMs,
+      headers: { 'User-Agent': 'AuraAlpha-Probe/1.0' },
+    }, (resp) => {
+      if ([301, 302, 303, 307, 308].includes(resp.statusCode)) {
+        const loc = (resp.headers['location'] || '').toString();
+        if (/safebrowse\.io|opendns\.com|cleanbrowsing|nextdns|umbrella/i.test(loc)) {
+          return finish({ ok: false, errorClass: 'http_redirect', error: `redirected to filter: ${loc}` });
+        }
+      }
+      resp.on('data', () => { /* discard */ });
+      resp.on('end', () => {
+        if (resp.statusCode >= 200 && resp.statusCode < 500) {
+          finish({ ok: true, status: resp.statusCode, via: 'node' });
+        } else {
+          finish({ ok: false, errorClass: 'http_error', error: `HTTP ${resp.statusCode}`, via: 'node' });
+        }
+      });
+    });
+    req.on('timeout', () => {
+      try { req.destroy(new Error('timeout')); } catch (_) {}
+      finish({ ok: false, errorClass: 'timeout', error: `timeout after ${timeoutMs}ms`, via: 'node' });
+    });
+    req.on('error', (err) => {
+      finish({ ok: false, errorClass: classifyError(err.code || err.message || String(err)), error: err.message || String(err), via: 'node' });
+    });
+    try { req.end(); }
+    catch (err) {
+      finish({ ok: false, errorClass: 'connection', error: err.message, via: 'node' });
+    }
+  });
+}
+
+function probeViaElectronNet(url, timeoutMs) {
   const started = Date.now();
   return new Promise((resolve) => {
     let settled = false;
@@ -69,44 +148,40 @@ async function probeUrl(url, timeoutMs = 6000) {
     try {
       req = net.request({ method: 'GET', url: `${url}/api/health` });
     } catch (err) {
-      return finish({ ok: false, errorClass: classifyError(err.message), error: err.message });
+      return finish({ ok: false, errorClass: classifyError(err.message), error: err.message, via: 'electron' });
     }
 
     const to = setTimeout(() => {
       try { req.abort(); } catch (_) { /* ignore */ }
-      finish({ ok: false, errorClass: 'timeout', error: `timeout after ${timeoutMs}ms` });
+      finish({ ok: false, errorClass: 'timeout', error: `timeout after ${timeoutMs}ms`, via: 'electron' });
     }, timeoutMs);
 
     req.on('response', (resp) => {
       clearTimeout(to);
-      // Detect 30x redirects to known block-page domains
       if ([301, 302, 303, 307, 308].includes(resp.statusCode)) {
         const loc = (resp.headers['location'] || resp.headers['Location'] || '').toString();
         if (/safebrowse\.io|opendns\.com|cleanbrowsing|nextdns|umbrella/i.test(loc)) {
-          return finish({ ok: false, errorClass: 'http_redirect', error: `redirected to filter: ${loc}` });
+          return finish({ ok: false, errorClass: 'http_redirect', error: `redirected to filter: ${loc}`, via: 'electron' });
         }
       }
-      // Drain body
       resp.on('data', () => { /* discard */ });
       resp.on('end', () => {
         if (resp.statusCode >= 200 && resp.statusCode < 500) {
-          // 2xx + 3xx + 4xx (incl. 401/405) all mean the server is reachable.
-          // We only care about transport-layer reachability here.
-          finish({ ok: true, status: resp.statusCode });
+          finish({ ok: true, status: resp.statusCode, via: 'electron' });
         } else {
-          finish({ ok: false, errorClass: 'http_error', error: `HTTP ${resp.statusCode}` });
+          finish({ ok: false, errorClass: 'http_error', error: `HTTP ${resp.statusCode}`, via: 'electron' });
         }
       });
     });
 
     req.on('error', (err) => {
       clearTimeout(to);
-      finish({ ok: false, errorClass: classifyError(err.message || String(err)), error: err.message || String(err) });
+      finish({ ok: false, errorClass: classifyError(err.message || String(err)), error: err.message || String(err), via: 'electron' });
     });
 
     try { req.end(); } catch (err) {
       clearTimeout(to);
-      finish({ ok: false, errorClass: 'connection', error: err.message });
+      finish({ ok: false, errorClass: 'connection', error: err.message, via: 'electron' });
     }
   });
 }
