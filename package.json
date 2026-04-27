@@ -1,6 +1,6 @@
 {
   "name": "aura-alpha-desktop",
-  "version": "9.3.0",
+  "version": "9.4.0",
   "description": "Aura Alpha \u2014 Autonomous Trading Intelligence Platform",
   "author": {
     "name": "Aura Holdings LLC",
@@ -32,6 +32,8 @@
       "preload.js",
       "worker.js",
       "updater.js",
+      "gpu_setup.js",
+      "network-config.js",
       "dist/**/*",
       "assets/**/*",
       "grid_worker/**/*",

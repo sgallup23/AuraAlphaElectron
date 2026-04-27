@@ -13,7 +13,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { initUpdater } = require('./updater');
-const { startWorker, stopWorker, getStatus: getWorkerStatus } = require('./worker');
+const { startWorker, stopWorker, getStatus: getWorkerStatus, findPython } = require('./worker');
+const { maybeOfferGpuInstall } = require('./gpu_setup');
 const networkConfig = require('./network-config');
 
 // ── Single instance lock ──────────────────────────────────────────────
@@ -483,6 +484,55 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   initUpdater();
+
+  // Auto-start the grid worker once API_BASE is resolved. If the probe failed,
+  // skip auto-start so we don't spam connection errors — user can start it
+  // manually after fixing networking via the modal/Settings page.
+  if (API_BASE && API_SOURCE !== 'none') {
+    setTimeout(() => {
+      try {
+        const status = getWorkerStatus();
+        if (!status.running) {
+          // worker.py accepts --mode {hybrid|max|dev}. 'max' = full compute lane,
+          // appropriate for dedicated rigs. Renderer can stop/restart with a
+          // different mode via the IPC handlers below.
+          startWorker('max', (msg) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('worker-log', msg);
+            }
+          }, API_BASE);
+        }
+      } catch (err) {
+        console.error('[auto-start] worker failed to start:', err);
+      }
+    }, 3000);
+
+    // Offer GPU acceleration install once worker is up. Runs ~30s after
+    // launch so we don't compete with the initial worker spin-up. Self-skips
+    // on non-NVIDIA boxes, when torch+CUDA is already present, or when the
+    // user has previously declined.
+    setTimeout(() => {
+      const log = (msg) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('worker-log', msg);
+        }
+      };
+      maybeOfferGpuInstall({
+        findPython,
+        onLog: log,
+        parentWindow: mainWindow,
+        onInstalled: () => {
+          log('[gpu-setup] Restarting worker to pick up GPU…');
+          try {
+            stopWorker();
+            setTimeout(() => startWorker('max', log, API_BASE), 4000);
+          } catch (err) {
+            log(`[gpu-setup] restart failed: ${err.message}`);
+          }
+        },
+      });
+    }, 30000);
+  }
 
   // Second instance: show existing window
   app.on('second-instance', () => {

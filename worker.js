@@ -256,4 +256,4 @@ function getStatus() {
   };
 }
 
-module.exports = { startWorker, stopWorker, getStatus };
+module.exports = { startWorker, stopWorker, getStatus, findPython };
