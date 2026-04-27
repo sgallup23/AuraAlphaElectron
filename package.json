@@ -1,6 +1,6 @@
 {
   "name": "aura-alpha-desktop",
-  "version": "9.4.1",
+  "version": "9.4.2",
   "description": "Aura Alpha \u2014 Autonomous Trading Intelligence Platform",
   "author": {
     "name": "Aura Holdings LLC",
@@ -9,6 +9,10 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "sync-frontend": "node scripts/sync-frontend.js",
+    "check-dist-fresh": "node scripts/check-dist-fresh.js",
+    "verify-dist-integrity": "node scripts/verify-dist-integrity.js",
+    "prebuild": "node scripts/check-dist-fresh.js && node scripts/verify-dist-integrity.js",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
     "build:mac": "electron-builder --mac",
