@@ -2009,27 +2009,34 @@ class GridWorker:
         try:
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 future_to_job = {}
+                future_submit_ts = {}
                 for job in jobs:
                     fut = executor.submit(route_job, job, cache_dir)
                     future_to_job[fut] = job.get("job_id", "?")
+                    future_submit_ts[fut] = time.time()
 
                 timeout = self.config.job_timeout * len(jobs)
                 for future in as_completed(future_to_job, timeout=timeout):
                     job_id = future_to_job[future]
+                    elapsed = round(time.time() - future_submit_ts[future], 2)
                     try:
                         result = future.result(timeout=self.config.job_timeout)
                         result["worker_id"] = self.worker_id
+                        result.setdefault("execution_time", elapsed)
+                        result.setdefault("compute_seconds", elapsed)
                         results.append(result)
                     except FuturesTimeout:
                         results.append({
                             "job_id": job_id, "status": "failed",
                             "error": f"Timed out after {self.config.job_timeout}s",
                             "worker_id": self.worker_id,
+                            "execution_time": elapsed,
                         })
                     except Exception as e:
                         results.append({
                             "job_id": job_id, "status": "failed",
                             "error": str(e), "worker_id": self.worker_id,
+                            "execution_time": elapsed,
                         })
         except Exception as e:
             log.error("Batch execution error: %s", e)

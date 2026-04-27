@@ -43,6 +43,39 @@ function findPython() {
   return null;
 }
 
+// ── Ensure required Python deps are installed ─────────────────────────
+// The grid worker needs numpy/polars/psutil/requests/pyyaml/yfinance to run
+// any actual job. Without them, worker.py starts (its top-level imports are
+// stdlib-only) but every job fails with ModuleNotFoundError, so the box
+// looks busy on the leaderboard but contributes zero results. This was the
+// root cause of the 2026-04-26/27 tradinglaptop-local production stall.
+//
+// We pip-install --user (no admin needed) on every launch; pip is fast on
+// already-satisfied deps so the no-op cost is ~1s. Failures here are
+// non-fatal — worker.py will still try and surface a clear error.
+const REQUIRED_PY_DEPS = [
+  'numpy>=1.24.0', 'polars>=0.20.0', 'psutil>=5.9.0',
+  'requests>=2.28.0', 'pyyaml>=6.0', 'yfinance>=0.2.0',
+];
+
+function ensurePythonDeps(python, onLog) {
+  try {
+    const { execFileSync } = require('child_process');
+    onLog && onLog('[worker] Checking Python dependencies...');
+    execFileSync(
+      python,
+      ['-m', 'pip', 'install', '--user', '--quiet', '--disable-pip-version-check', ...REQUIRED_PY_DEPS],
+      { stdio: 'pipe', timeout: 120000 },
+    );
+    onLog && onLog('[worker] Python dependencies satisfied');
+    return true;
+  } catch (err) {
+    const msg = (err && err.stderr) ? err.stderr.toString().slice(0, 400) : String(err).slice(0, 400);
+    onLog && onLog(`[worker] dep install warning (continuing): ${msg}`);
+    return false;
+  }
+}
+
 // ── Find worker.py ────────────────────────────────────────────────────
 function findWorkerScript() {
   // When packaged, extraResources lives at process.resourcesPath/grid_worker/
@@ -111,6 +144,11 @@ function startWorker(mode, onLog, coordinatorUrl) {
   workerMode = mode || 'compute';
   jobsCompleted = 0;
   workerStartTime = Date.now();
+
+  // Install/refresh Python dependencies before spawning. Non-blocking on
+  // failure — worker.py will still launch and emit a clear error if
+  // numpy/etc are still missing.
+  ensurePythonDeps(python, logCallback);
 
   const url = (coordinatorUrl && typeof coordinatorUrl === 'string' && coordinatorUrl.trim())
     ? coordinatorUrl.trim()
