@@ -40,7 +40,7 @@ from pathlib import Path
 from threading import Event, Thread
 from typing import Any, Dict, List, Optional, Tuple
 
-__version__ = "9.4.13"
+__version__ = "9.4.14"
 
 # ============================================================================
 # GPU / CUDA Detection  (optional -- graceful fallback to CPU)
@@ -1903,6 +1903,24 @@ class GridWorker:
         else:
             # Standalone install: only research_backtest works without phase2.
             supported = ["research_backtest", "backtest"]
+
+        # AURA_JOB_TYPES env var biases (intersects) the auto-detected list.
+        # Used to force a strong-GPU box to drain ml_train/optimization while
+        # other boxes pull research_backtest. The intersection guards against
+        # advertising a type this worker can't actually handle (e.g.
+        # AURA_JOB_TYPES=ml_train on a no-prodesk box → empty intersection
+        # falls back to the auto-detected list to avoid an idle worker).
+        _jt_env = os.environ.get("AURA_JOB_TYPES", "").strip()
+        if _jt_env:
+            requested = [t.strip() for t in _jt_env.split(",") if t.strip()]
+            intersected = [t for t in requested if t in supported]
+            if intersected:
+                log.info("[CAPS] AURA_JOB_TYPES bias active: %s (intersected with %d auto-detected)",
+                         intersected, len(supported))
+                supported = intersected
+            else:
+                log.warning("[CAPS] AURA_JOB_TYPES=%s has no overlap with auto-detected %s — ignoring bias",
+                            _jt_env, supported)
 
         caps = {
             "hostname": platform.node() or "unknown",
