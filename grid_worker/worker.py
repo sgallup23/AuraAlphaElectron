@@ -40,7 +40,7 @@ from pathlib import Path
 from threading import Event, Thread
 from typing import Any, Dict, List, Optional, Tuple
 
-__version__ = "9.4.11"
+__version__ = "9.4.12"
 
 # ============================================================================
 # GPU / CUDA Detection  (optional -- graceful fallback to CPU)
@@ -2485,11 +2485,17 @@ Token resolution order:
         except Exception:
             pass
 
-    # Build config from defaults + env
-    coordinator_url = (args.coordinator_url
-                       or os.getenv("COORDINATOR_URL")
-                       or os.getenv("AURA_COORDINATOR_URL")
-                       or "https://auraalpha.cc")
+    # Build config from defaults + env. URL probe-and-fallback handles the
+    # case where the user's network blocks auraalpha.cc (xFi, Norton, etc.) —
+    # falls through to backup hostnames or direct EC2 IP transparently. The
+    # worker is launched as `python worker.py` (not `python -m grid_worker`),
+    # so add this dir to sys.path before the absolute import.
+    _gw_dir = str(Path(__file__).resolve().parent)
+    if _gw_dir not in sys.path:
+        sys.path.insert(0, _gw_dir)
+    from network import resolve_coordinator_url
+    cli_url = args.coordinator_url or None
+    coordinator_url, _url_source = resolve_coordinator_url(cli_url)
     max_parallel = args.max_parallel or int(os.getenv("MAX_PARALLEL", "0"))
     batch_size = args.batch_size or int(os.getenv("BATCH_SIZE", "5"))
 
