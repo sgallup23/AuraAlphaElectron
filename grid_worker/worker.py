@@ -1418,7 +1418,10 @@ def run_ml_train_job(job_dict: dict, cache_dir: Path) -> dict:
     base = _resolve_prodesk_base() if "_resolve_prodesk_base" in globals() else None
     if base is None:
         try:
-            from .standalone.job_router import BASE as base
+            _gw_dir = str(Path(__file__).resolve().parent)
+            if _gw_dir not in sys.path:
+                sys.path.insert(0, _gw_dir)
+            from standalone.job_router import BASE as base
         except Exception:
             base = None
     if base is None:
@@ -1474,7 +1477,10 @@ def run_deep_train_job(job_dict: dict, cache_dir: Path) -> dict:
     base = _resolve_prodesk_base() if "_resolve_prodesk_base" in globals() else None
     if base is None:
         try:
-            from .standalone.job_router import BASE as base
+            _gw_dir = str(Path(__file__).resolve().parent)
+            if _gw_dir not in sys.path:
+                sys.path.insert(0, _gw_dir)
+            from standalone.job_router import BASE as base
         except Exception:
             base = None
     if base is None:
