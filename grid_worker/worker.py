@@ -40,7 +40,7 @@ from pathlib import Path
 from threading import Event, Thread
 from typing import Any, Dict, List, Optional, Tuple
 
-__version__ = "9.4.12"
+__version__ = "9.4.13"
 
 # ============================================================================
 # GPU / CUDA Detection  (optional -- graceful fallback to CPU)
@@ -362,7 +362,8 @@ class CoordinatorClient:
         log.warning("Registration failed: %d %s", status, str(data)[:200])
         return False
 
-    def heartbeat(self, active_job_ids: Optional[List[str]] = None) -> bool:
+    def heartbeat(self, active_job_ids: Optional[List[str]] = None,
+                  supported_job_types: Optional[List[str]] = None) -> bool:
         payload = {
             "worker_id": self.worker_id,
             "status": "online",
@@ -374,6 +375,12 @@ class CoordinatorClient:
             payload["gpu_model"] = _GPU_NAME
             payload["gpu_vram_gb"] = _GPU_VRAM_GB
             payload["cuda_available"] = True
+        # Re-declare capabilities every heartbeat. Lets a worker narrow or
+        # widen its supported_job_types list mid-run (e.g., AURA_PRODESK_PATH
+        # appears, GPU appears) without forcing a restart. Server-side patch:
+        # prodesk commit ecc2f26 (heartbeat handler honors this field).
+        if supported_job_types is not None:
+            payload["supported_job_types"] = list(supported_job_types)
         status, _ = _http_request("POST", self._url("heartbeat"), self.headers,
                                   payload, timeout=10)
         if status == 401:
@@ -1940,7 +1947,10 @@ class GridWorker:
 
         while not self._shutdown.is_set():
             try:
-                success = self.client.heartbeat(list(self._active_job_ids))
+                success = self.client.heartbeat(
+                    list(self._active_job_ids),
+                    supported_job_types=self._supported_job_types,
+                )
                 if success:
                     if consecutive_failures > 0:
                         log.info("Heartbeat recovered after %d consecutive failures", consecutive_failures)
