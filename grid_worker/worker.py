@@ -40,7 +40,7 @@ from pathlib import Path
 from threading import Event, Thread
 from typing import Any, Dict, List, Optional, Tuple
 
-__version__ = "1.2.0"
+__version__ = "9.4.11"
 
 # ============================================================================
 # GPU / CUDA Detection  (optional -- graceful fallback to CPU)
@@ -1872,8 +1872,31 @@ class GridWorker:
         self._active_job_ids: List[str] = []
         self._last_queue_hint = 0  # estimated remaining queue from last dequeue
         self.stats = {"completed": 0, "failed": 0, "started_at": 0.0}
+        # Probe capabilities once at startup; coordinator filters dequeue by these
+        self._supported_job_types = self._capabilities().get("supported_job_types", ["research_backtest"])
 
     def _capabilities(self) -> dict:
+        # Capability probe: which job types can this worker actually run?
+        # Standalone-only handlers work everywhere. Phase2-importing handlers
+        # (ml_train, deep_train, optimization) require prodesk on local disk +
+        # an RDS DSN reachable for training data — external users have neither.
+        # Advertising those types when prodesk is missing causes silent 100%
+        # failure (the v9.4.x "prodesk BASE not found" incident).
+        try:
+            _gw_dir = str(Path(__file__).resolve().parent)
+            if _gw_dir not in sys.path:
+                sys.path.insert(0, _gw_dir)
+            from standalone.job_router import BASE as _base  # noqa: WPS433
+        except Exception:
+            _base = None
+        has_prodesk = _base is not None
+
+        if has_prodesk:
+            supported = sorted(_JOB_HANDLERS.keys())
+        else:
+            # Standalone install: only research_backtest works without phase2.
+            supported = ["research_backtest", "backtest"]
+
         caps = {
             "hostname": platform.node() or "unknown",
             "cpu_count": self.config.cpu_count,
@@ -1884,18 +1907,20 @@ class GridWorker:
             "python_version": platform.python_version(),
             "worker_version": __version__,
             "worker_type": "grid_contributor",
-            "supported_job_types": sorted(_JOB_HANDLERS.keys()),
+            "supported_job_types": supported,
+            "has_prodesk": has_prodesk,
         }
 
-        # GPU capabilities
+        # GPU capabilities (still report — coordinator may use for routing)
         if _GPU_AVAILABLE:
             caps["gpu_available"] = True
             caps["cuda_available"] = True
             caps["gpu_model"] = _GPU_NAME
             caps["gpu_vram_gb"] = _GPU_VRAM_GB
-            caps["capabilities"] = ["cpu", "gpu", "backtest", "ml"]
+            caps["capabilities"] = ["cpu", "gpu", "backtest"] + (["ml"] if has_prodesk else [])
         else:
             caps["gpu_available"] = False
+            caps["cuda_available"] = False
             caps["capabilities"] = ["cpu", "backtest"]
 
         # Report PyTorch availability (can still do ML on CPU)
@@ -2225,8 +2250,10 @@ class GridWorker:
                         if self._shutdown.is_set():
                             break
 
-                # Dequeue — no type filter for fastest query (skip unsupported in router)
-                jobs = self.client.dequeue(count=batch_count)
+                # Dequeue with type filter — coordinator filters in SQL so we
+                # never receive job types this worker can't actually run
+                # (prevents the 100%-fail cycle when prodesk is missing).
+                jobs = self.client.dequeue(count=batch_count, job_types=self._supported_job_types)
                 if not jobs:
                     log.debug("No jobs available, sleeping %ds", idle_backoff)
                     self._shutdown.wait(timeout=idle_backoff)
@@ -2273,6 +2300,120 @@ class GridWorker:
 
 
 # ============================================================================
+# Diagnostic CLI
+# ============================================================================
+
+def _run_diagnose() -> int:
+    """Print a copy-pasteable diagnostic report and exit.
+
+    Probes Python, deps, GPU, prodesk visibility, and coordinator reachability
+    so users can self-serve troubleshoot or share output for support.
+    """
+    import json as _json
+    import urllib.request
+    import urllib.error
+
+    print("=" * 70)
+    print("Aura Alpha Grid Worker -- Diagnostic Report")
+    print("=" * 70)
+    print(f"Worker version : {__version__}")
+    print(f"Python         : {platform.python_version()} ({sys.executable})")
+    print(f"Platform       : {platform.system()} {platform.release()} ({platform.machine()})")
+    print(f"Hostname       : {platform.node()}")
+    print(f"Script dir     : {Path(__file__).resolve().parent}")
+    print(f"CWD            : {Path.cwd()}")
+    print()
+
+    # Dependencies
+    print("--- Dependencies ---")
+    for mod in ("psutil", "requests", "yaml", "numpy", "polars", "torch"):
+        try:
+            m = __import__(mod)
+            ver = getattr(m, "__version__", "?")
+            print(f"  [OK] {mod:<10} {ver}")
+        except Exception as e:
+            print(f"  [--] {mod:<10} MISSING ({type(e).__name__})")
+    print()
+
+    # Hardware
+    print("--- Hardware ---")
+    try:
+        import psutil as _ps
+        print(f"  CPUs           : {_ps.cpu_count(logical=True)}")
+        print(f"  RAM            : {round(_ps.virtual_memory().total / 1024**3, 1)} GB")
+    except Exception:
+        print("  CPUs/RAM       : (psutil unavailable)")
+
+    try:
+        import torch as _t  # noqa: WPS433
+        if _t.cuda.is_available():
+            print(f"  CUDA           : YES (devices={_t.cuda.device_count()})")
+            print(f"  GPU            : {_t.cuda.get_device_name(0)}")
+            try:
+                vram = _t.cuda.get_device_properties(0).total_memory / 1024**3
+                print(f"  VRAM           : {round(vram, 1)} GB")
+            except Exception:
+                pass
+        else:
+            print("  CUDA           : NO (CPU only)")
+    except Exception:
+        print("  CUDA           : NO (torch missing)")
+    print()
+
+    # Prodesk visibility
+    print("--- Prodesk (phase2 dev install) ---")
+    try:
+        _gw_dir = str(Path(__file__).resolve().parent)
+        if _gw_dir not in sys.path:
+            sys.path.insert(0, _gw_dir)
+        from standalone.job_router import BASE as _base  # noqa: WPS433
+        if _base is not None:
+            print(f"  [OK] BASE      : {_base}")
+            print("  Job types      : research_backtest, ml_train, optimization, deep_train (full)")
+        else:
+            print("  [--] BASE      : not found (standalone mode)")
+            print("  Job types      : research_backtest only")
+            print("  Set AURA_PRODESK_PATH=/abs/path/to/prodesk to override.")
+    except Exception as e:
+        print(f"  [ERR] {type(e).__name__}: {e}")
+    print()
+
+    # Network
+    print("--- Network ---")
+    coordinator = (os.getenv("COORDINATOR_URL")
+                   or os.getenv("AURA_COORDINATOR_URL")
+                   or "https://auraalpha.cc")
+    print(f"  Coordinator    : {coordinator}")
+    for url in (coordinator + "/api/health", coordinator + "/api/grid/contributor/health"):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": f"aura-grid-worker/{__version__}"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                print(f"  [OK] {url} -> HTTP {r.status}")
+        except urllib.error.HTTPError as e:
+            print(f"  [{e.code}] {url} (reachable but not 200)")
+        except Exception as e:
+            print(f"  [FAIL] {url} -> {type(e).__name__}: {e}")
+    print()
+
+    # Cache directory
+    cache_dir = Path(os.getenv("AURA_WORKER_CACHE", str(Path.home() / ".aura-worker"))) / "data"
+    print("--- Cache ---")
+    print(f"  Cache dir      : {cache_dir} ({'exists' if cache_dir.exists() else 'will be created'})")
+    if cache_dir.exists():
+        try:
+            files = list(cache_dir.rglob("*.parquet"))
+            print(f"  Parquet files  : {len(files)}")
+        except Exception:
+            pass
+    print()
+
+    print("=" * 70)
+    print("Done. Share this output with support if reporting an issue.")
+    print("=" * 70)
+    return 0
+
+
+# ============================================================================
 # CLI Entry Point
 # ============================================================================
 
@@ -2311,8 +2452,13 @@ Token resolution order:
     parser.add_argument("--mode", type=str, default="hybrid",
                         choices=["hybrid", "max", "dev"],
                         help="Compute mode: hybrid (adaptive, default), max (full CPU), dev (minimal)")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="Print diagnostic report (Python, GPU, network, prodesk, deps) and exit")
 
     args = parser.parse_args()
+
+    if args.diagnose:
+        return _run_diagnose()
 
     # Logging
     level = logging.DEBUG if args.verbose else logging.INFO

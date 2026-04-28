@@ -27,37 +27,28 @@ from typing import Any, Dict, Optional
 
 log = logging.getLogger("standalone.job_router")
 
-# Project base — workers running from prodesk
-#
-# 2026-04-27 (incident: GPU fleet stall through 04-27): on Windows installs of
-# the Electron app, prodesk lives inside WSL2. None of the home-relative
-# candidates resolve, so BASE ends up None and every phase2-importing job
-# (notably ml_train) fails — the failure is masked as the misleading
-# "insufficient data or split too small" error from the catch-all in
-# route_job(). Add WSL UNC fallbacks so the Windows-side Python can still
-# import phase2.
+# Project base — workers running from prodesk (dev/internal only).
+# External users have no prodesk; BASE will be None and only standalone job
+# types (research_backtest) will run. Set AURA_PRODESK_PATH for non-default
+# locations. NOTE: do not embed user-specific UNC fallbacks here — they leak
+# into every external install.
+import os as _os
 BASE = None
-_candidates = [
+_candidates = []
+_env_override = _os.environ.get("AURA_PRODESK_PATH")
+if _env_override:
+    _candidates.append(Path(_env_override))
+_candidates.extend([
     Path.home() / "TRADING_DESK" / "prodesk",
     Path.home() / "prodesk",
     Path(__file__).resolve().parent.parent.parent,
-]
-import os as _os
-if _os.name == "nt":
-    # WSL UNC fallbacks for Electron-on-Windows where prodesk lives in WSL.
-    # `\\wsl.localhost\` is the modern path (Windows 11+); `\\wsl$\` is the
-    # legacy alias still honoured by Win10/early-Win11. Probing both is cheap
-    # and covers every supported Windows host.
-    _candidates.append(Path(r"\\wsl.localhost\Ubuntu\home\shawn\TRADING_DESK\prodesk"))
-    _candidates.append(Path(r"\\wsl$\Ubuntu\home\shawn\TRADING_DESK\prodesk"))
+])
 for candidate in _candidates:
     try:
         if (candidate / "phase2").exists():
             BASE = candidate
             break
     except OSError:
-        # Hitting an unavailable UNC share raises OSError on Windows;
-        # continue to the next candidate rather than crashing import.
         continue
 
 
