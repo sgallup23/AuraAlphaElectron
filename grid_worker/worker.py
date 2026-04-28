@@ -2075,21 +2075,69 @@ class GridWorker:
 
     @staticmethod
     def _auto_update():
-        """Check GitHub for updates and pull if newer. Restart if code changed."""
-        worker_dir = Path(__file__).resolve().parent
-        repo_dir = worker_dir.parent  # AuraCommandV2 root
-        git_dir = repo_dir / ".git"
-        if not git_dir.exists():
+        """Self-update GPU Pack from GitHub releases.
+
+        Reads pack_dir/VERSION.json (written by CI when the ZIP is built). If
+        absent, falls back to git-pull mode for dev installs that run from a
+        checkout. Otherwise hits the GitHub Releases API, downloads the
+        AuraAlphaGridWorker_*.zip asset if newer, extracts in place (preserving
+        .env / data / logs), updates VERSION.json, and re-execs.
+        """
+        import json as _json, urllib.request, zipfile, io
+        pack_dir = Path(__file__).resolve().parent
+        version_file = pack_dir / "VERSION.json"
+        if not version_file.exists():
+            return GridWorker._auto_update_via_git(pack_dir)
+        try:
+            local = _json.loads(version_file.read_text()).get("version", "0.0.0")
+            req = urllib.request.Request(
+                "https://api.github.com/repos/sgallup23/AuraAlphaElectron/releases/latest",
+                headers={"Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                release = _json.load(resp)
+            remote = release.get("tag_name", "v0.0.0").lstrip("v")
+            if remote == local:
+                log.info("[AUTO-UPDATE] GPU Pack is current (v%s)", local)
+                return False
+            asset_url = next(
+                (a["browser_download_url"] for a in release.get("assets", [])
+                 if a["name"].startswith("AuraAlphaGridWorker_") and a["name"].endswith(".zip")),
+                None,
+            )
+            if not asset_url:
+                log.warning("[AUTO-UPDATE] No GPU Pack asset in release v%s", remote)
+                return False
+            log.info("[AUTO-UPDATE] GPU Pack v%s available — downloading...", remote)
+            with urllib.request.urlopen(asset_url, timeout=120) as resp:
+                data = resp.read()
+            keep = {".env", ".env.template", "data", "logs", "VERSION.json"}
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                for name in zf.namelist():
+                    top = name.split("/", 1)[0]
+                    if top in keep:
+                        continue
+                    zf.extract(name, pack_dir)
+            version_file.write_text(_json.dumps({"version": remote}) + "\n")
+            log.info("[AUTO-UPDATE] Updated to v%s. Restarting...", remote)
+            os.execv(sys.executable, [sys.executable, str(pack_dir / "worker.py"), *sys.argv[1:]])
+        except Exception as e:
+            log.warning("[AUTO-UPDATE] failed: %s", e)
+            return False
+
+    @staticmethod
+    def _auto_update_via_git(pack_dir: Path):
+        """Legacy git-pull updater. Used when pack_dir is a git checkout."""
+        repo_dir = pack_dir.parent
+        if not (repo_dir / ".git").exists():
             return False
         try:
-            # Fetch latest
             result = subprocess.run(
                 ["git", "fetch", "origin", "master"],
                 cwd=str(repo_dir), capture_output=True, text=True, timeout=15,
             )
             if result.returncode != 0:
                 return False
-            # Check if behind
             result = subprocess.run(
                 ["git", "rev-list", "--count", "HEAD..origin/master"],
                 cwd=str(repo_dir), capture_output=True, text=True, timeout=5,
@@ -2105,7 +2153,6 @@ class GridWorker:
             )
             if result.returncode == 0:
                 log.info("[AUTO-UPDATE] Updated! Restarting worker...")
-                # Re-exec ourselves with the same args
                 os.execv(sys.executable, [sys.executable] + sys.argv)
             else:
                 log.warning("[AUTO-UPDATE] Pull failed: %s", result.stderr[:100])
