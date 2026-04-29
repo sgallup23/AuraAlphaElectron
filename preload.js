@@ -15,6 +15,17 @@ contextBridge.exposeInMainWorld('auraDesktop', {
   resolveServer: () => ipcRenderer.invoke('network-resolve'),
   onOpenNetworkSettings: (cb) => ipcRenderer.on('open-network-settings', () => cb()),
 
+  // Auth token storage (safeStorage-backed, plain JSON fallback). Renderer
+  // hydrates from these into localStorage at boot so cookie loss on origin
+  // flips and Electron updates no longer signs the user out.
+  getAuthTokens: () => ipcRenderer.invoke('auth-get-tokens'),
+  setAuthTokens: (payload) => ipcRenderer.invoke('auth-set-tokens', payload),
+  clearAuthTokens: () => ipcRenderer.invoke('auth-clear-tokens'),
+  getAuthStorageInfo: () => ipcRenderer.invoke('auth-storage-info'),
+
+  // Diagnostics — tray "Diagnostics..." menu item posts this to renderer
+  onOpenDiagnostics: (cb) => ipcRenderer.on('open-diagnostics', () => cb()),
+
   platform: process.platform,
   version: require('./package.json').version,
 });

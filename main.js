@@ -8,6 +8,7 @@ const {
   session,
   protocol,
   net,
+  safeStorage,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -26,6 +27,8 @@ if (!gotLock) {
 // ── Paths ─────────────────────────────────────────────────────────────
 const userDataPath = app.getPath('userData');
 const stateFile = path.join(userDataPath, 'window-state.json');
+const authFile = path.join(userDataPath, 'auth.bin');
+const authFileFallback = path.join(userDataPath, 'auth.json');
 const isDev = !app.isPackaged;
 const DIST_PATH = path.join(__dirname, 'dist');
 // API_BASE is resolved at startup by network-config.js. Resolve order:
@@ -59,6 +62,64 @@ function saveWindowState(win) {
   try {
     fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
   } catch (_) { /* ignore */ }
+}
+
+// ── Auth token storage (safeStorage-backed, plain JSON fallback) ──────
+// Renderer hydrates these into localStorage at boot so cookie-loss on
+// origin flips (CDN ↔ Tailscale) and Electron updates no longer logs the
+// user out. Stored: { token, refresh, user, savedAt }.
+function authStorageBackend() {
+  try {
+    return safeStorage && safeStorage.isEncryptionAvailable() ? 'safe' : 'plain';
+  } catch (_) {
+    return 'plain';
+  }
+}
+
+function readAuthTokens() {
+  try {
+    if (authStorageBackend() === 'safe' && fs.existsSync(authFile)) {
+      const buf = fs.readFileSync(authFile);
+      const txt = safeStorage.decryptString(buf);
+      return JSON.parse(txt);
+    }
+  } catch (_) { /* fall through to plain */ }
+  try {
+    if (fs.existsSync(authFileFallback)) {
+      return JSON.parse(fs.readFileSync(authFileFallback, 'utf8'));
+    }
+  } catch (_) { /* ignore */ }
+  return null;
+}
+
+function writeAuthTokens(payload) {
+  const data = {
+    token: payload?.token || null,
+    refresh: payload?.refresh || null,
+    user: payload?.user || null,
+    savedAt: Date.now(),
+  };
+  const json = JSON.stringify(data);
+  if (authStorageBackend() === 'safe') {
+    try {
+      fs.writeFileSync(authFile, safeStorage.encryptString(json));
+      try { fs.unlinkSync(authFileFallback); } catch (_) {}
+      return { ok: true, backend: 'safe' };
+    } catch (_) { /* fall through */ }
+  }
+  try {
+    fs.writeFileSync(authFileFallback, json, { mode: 0o600 });
+    return { ok: true, backend: 'plain' };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+function clearAuthTokens() {
+  let removed = 0;
+  try { if (fs.existsSync(authFile)) { fs.unlinkSync(authFile); removed++; } } catch (_) {}
+  try { if (fs.existsSync(authFileFallback)) { fs.unlinkSync(authFileFallback); removed++; } } catch (_) {}
+  return { ok: true, removed };
 }
 
 // ── MIME types ────────────────────────────────────────────────────────
@@ -312,6 +373,16 @@ function createTray() {
         });
       },
     },
+    {
+      label: 'Diagnostics...',
+      click: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show();
+          mainWindow.focus();
+          mainWindow.webContents.send('open-diagnostics');
+        }
+      },
+    },
     { type: 'separator' },
     {
       label: 'Quit',
@@ -389,6 +460,30 @@ function registerIPC() {
       API_SOURCE = resolved.source;
     }
     return resolved;
+  });
+
+  // ── Auth token storage IPC ─────────────────────────────────────────
+  ipcMain.handle('auth-get-tokens', () => {
+    const tokens = readAuthTokens();
+    return {
+      ok: true,
+      backend: authStorageBackend(),
+      tokens: tokens || null,
+    };
+  });
+
+  ipcMain.handle('auth-set-tokens', (_, payload) => writeAuthTokens(payload || {}));
+
+  ipcMain.handle('auth-clear-tokens', () => clearAuthTokens());
+
+  ipcMain.handle('auth-storage-info', () => {
+    const tokens = readAuthTokens();
+    return {
+      backend: authStorageBackend(),
+      hasToken: !!(tokens && tokens.token),
+      savedAt: tokens?.savedAt || null,
+      file: authStorageBackend() === 'safe' ? authFile : authFileFallback,
+    };
   });
 }
 
