@@ -19,9 +19,9 @@ const PRIMARY_URL = 'https://auraalpha.cc';
 // Only resolves when the local machine is on the tailnet, so it's harmless
 // for users who aren't.
 const BACKUP_URLS = [
+  'https://auraalpha.app',
+  'https://aura-trading.com',
   'http://prodesk-ec2.tail62e000.ts.net:8020',
-  // 'https://aura-trading.com',
-  // 'https://auraalpha.app',
 ];
 // Last-resort direct EC2 IP (HTTP, no Cloudflare). Bypasses TLS-MITM filters
 // but won't survive an EC2 reboot if Elastic IP is detached.
