@@ -21,6 +21,12 @@ const PRIMARY_URL = 'https://auraalpha.cc';
 const BACKUP_URLS = [
   'https://auraalpha.app',
   'https://aura-trading.com',
+  // Raw tailnet IP — preferred over the FQDN below because Cloudflare WARP's
+  // local resolver (127.0.2.2) hijacks DNS on Windows and refuses to resolve
+  // *.tail62e000.ts.net, even with `tailscale dns status` saying enabled.
+  // The IP is stable as long as prodesk-ec2 stays on the tailnet.
+  // See memory/warp_dns_breaks_magicdns.md (2026-05-01).
+  'http://100.83.89.118:8020',
   'http://prodesk-ec2.tail62e000.ts.net:8020',
 ];
 // Last-resort direct EC2 IP (HTTP, no Cloudflare). Bypasses TLS-MITM filters
