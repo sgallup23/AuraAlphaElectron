@@ -23,9 +23,6 @@ const BACKUP_URLS = [
   // 'https://aura-trading.com',
   // 'https://auraalpha.app',
 ];
-// Last-resort direct EC2 IP (HTTP, no Cloudflare). Bypasses TLS-MITM filters
-// but won't survive an EC2 reboot if Elastic IP is detached.
-const DIRECT_IP_URL = 'http://54.172.235.137:8020';
 
 // ── Settings persistence ─────────────────────────────────────────────
 function getSettingsPath() {
@@ -244,11 +241,11 @@ async function resolveServerUrl() {
     if (hit) return { ...hit, probes };
   }
 
-  // 5. Direct EC2 IP — last resort
-  const direct = await tryUrl(DIRECT_IP_URL, 'direct');
-  if (direct) return { ...direct, probes };
-
-  // Nothing worked — caller will show the friendly modal
+  // Nothing worked — caller will show the friendly modal.
+  // (Direct-IP fallback removed in v9.4.15 — public port 8020 isn't open
+  // to the internet anyway, and EC2 stop/start changes the IP, so probing
+  // a hardcoded IP only delayed the friendly modal by ~6s. Tunnel-CNAME
+  // on auraalpha.cc is the durable path now.)
   return { url: null, source: 'none', probes };
 }
 
@@ -269,7 +266,6 @@ module.exports = {
   TAILSCALE_URL,
   PRIMARY_URL,
   BACKUP_URLS,
-  DIRECT_IP_URL,
   loadSettings,
   saveSettings,
   probeUrl,
