@@ -12,6 +12,11 @@ const { app } = require('electron');
 // MagicDNS resolves only inside the tailnet, so non-tailnet clients fail fast
 // (dns_block) and fall through to PRIMARY_URL transparently.
 const TAILSCALE_URL = 'http://prodesk-ec2:8020';
+// `app.auraalpha.cc` is a dedicated authenticated-app hostname routed through
+// the existing cloudflared tunnel with WAF / Bot Fight / IP Access rules
+// disabled at zone level. Designed to bypass per-IP CF rejections and ISP
+// DNS filters that block the apex domain for some users.
+const APP_URL = 'https://app.auraalpha.cc';
 const PRIMARY_URL = 'https://auraalpha.cc';
 // Backup hostnames — fill in once registered. main.js auto-tries each in order.
 // Tailnet hostname (Tailscale magicDNS) is a backup so workers on the tailnet
@@ -23,9 +28,6 @@ const BACKUP_URLS = [
   // 'https://aura-trading.com',
   // 'https://auraalpha.app',
 ];
-// Last-resort direct EC2 IP (HTTP, no Cloudflare). Bypasses TLS-MITM filters
-// but won't survive an EC2 reboot if Elastic IP is detached.
-const DIRECT_IP_URL = 'http://54.172.235.137:8020';
 
 // ── Settings persistence ─────────────────────────────────────────────
 function getSettingsPath() {
@@ -229,12 +231,19 @@ async function resolveServerUrl() {
     if (hit) return { ...hit, probes };
   }
 
-  // 2. Tailscale (MagicDNS) — preferred during reputation warmup. Fails fast
-  //    (DNS lookup error) on non-tailnet clients, then falls through to primary.
+  // 2. App endpoint — dedicated cloudflared tunnel hostname with WAF off.
+  //    Works for end users on any ISP without Tailscale or WARP, and is the
+  //    durable production path. Tried first because it's the most reliable
+  //    public route. Primary apex stays reserved for marketing pages.
+  const appHit = await tryUrl(APP_URL, 'app');
+  if (appHit) return { ...appHit, probes };
+
+  // 3. Tailscale (MagicDNS) — for fleet workers / Shawn's devices on the
+  //    tailnet. Fails fast (DNS lookup error) on non-tailnet clients.
   const tailscale = await tryUrl(TAILSCALE_URL, 'tailscale');
   if (tailscale) return { ...tailscale, probes };
 
-  // 3. Primary
+  // 4. Primary apex — kept as a fallback in case `app` is misconfigured.
   const primary = await tryUrl(PRIMARY_URL, 'primary');
   if (primary) return { ...primary, probes };
 
@@ -244,11 +253,10 @@ async function resolveServerUrl() {
     if (hit) return { ...hit, probes };
   }
 
-  // 5. Direct EC2 IP — last resort
-  const direct = await tryUrl(DIRECT_IP_URL, 'direct');
-  if (direct) return { ...direct, probes };
-
-  // Nothing worked — caller will show the friendly modal
+  // Nothing worked — caller will show the friendly modal.
+  // (Direct EC2 IP fallback removed in v9.4.10 — public port 8020 isn't open
+  // to the internet anyway, and EC2 stop/start changes the IP. Tunnel CNAME
+  // for app.auraalpha.cc is the durable path now.)
   return { url: null, source: 'none', probes };
 }
 
@@ -269,7 +277,6 @@ module.exports = {
   TAILSCALE_URL,
   PRIMARY_URL,
   BACKUP_URLS,
-  DIRECT_IP_URL,
   loadSettings,
   saveSettings,
   probeUrl,
