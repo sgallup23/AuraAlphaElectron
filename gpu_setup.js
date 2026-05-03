@@ -141,12 +141,18 @@ async function maybeOfferGpuInstall({ findPython, onLog, onInstalled, parentWind
     const choice = await dialog.showMessageBox(parentWindow, {
       type: 'info',
       title: 'Enable GPU acceleration?',
-      message: 'GPU acceleration available',
+      message: 'Speed up strategy work with your NVIDIA GPU',
       detail:
-        `We detected an NVIDIA GPU (${gpu}). ` +
-        `Installing GPU compute support gives ${ESTIMATED_SPEEDUP} faster research throughput on this machine.\n\n` +
-        `One-time download: ~${ESTIMATED_DOWNLOAD_MB} MB. Runs in the background — Aura Alpha stays usable while it installs.`,
-      buttons: ['Install', 'Skip'],
+        `Aura Alpha detected an NVIDIA GPU on this machine (${gpu}).\n\n` +
+        `Enabling GPU acceleration speeds up strategy training, ML model fitting, ` +
+        `and walk-forward backtesting by approximately ${ESTIMATED_SPEEDUP}. In practice that means:\n` +
+        `  • Faster iteration when you're building or tuning a strategy\n` +
+        `  • Quicker validation before you publish to the marketplace\n` +
+        `  • More compute credits per hour if you opt into the grid\n\n` +
+        `Setup is a one-time ~${ESTIMATED_DOWNLOAD_MB} MB CUDA runtime download. ` +
+        `It runs in the background and Aura Alpha stays fully usable during the install. ` +
+        `You can change this later in Settings — declining now doesn't lock you out.`,
+      buttons: ['Install', 'Skip for now'],
       defaultId: 0,
       cancelId: 1,
       noLink: true,

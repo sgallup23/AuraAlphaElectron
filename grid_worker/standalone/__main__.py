@@ -8,6 +8,7 @@ import logging
 import sys
 
 from .config import WorkerConfig
+from .cuda_bootstrap import ensure_cuda_torch
 from .worker import StandaloneWorker
 
 
@@ -32,8 +33,17 @@ Examples:
                         help="Max parallel backtests (0 = auto-detect from CPU count)")
     parser.add_argument("--batch-size", type=int, default=0,
                         help="Jobs to pull per batch (default: 5)")
+    parser.add_argument("--job-types", type=str, default="",
+                        help="Comma-separated list of job_types to dequeue. "
+                             "Server filters dequeue to these types only. Lets the "
+                             "worker avoid wasting cycles on jobs it would skip "
+                             "(e.g. ml_train under STANDALONE_MODE). "
+                             "Example: --job-types research_backtest")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Enable debug logging")
+    parser.add_argument("--skip-cuda-bootstrap", action="store_true",
+                        help="Skip first-run CUDA PyTorch auto-download "
+                             "(also respects AURA_SKIP_CUDA_BOOTSTRAP=1)")
 
     args = parser.parse_args()
 
@@ -59,11 +69,15 @@ Examples:
         config.max_parallel = args.max_parallel
     if args.batch_size > 0:
         config.batch_size = args.batch_size
+    if args.job_types:
+        config.job_types = [s.strip() for s in args.job_types.split(",") if s.strip()]
 
     # Validate token
     if not config.token:
         print("ERROR: --token is required (or set AURA_TOKEN env var)", file=sys.stderr)
         sys.exit(1)
+
+    ensure_cuda_torch(skip=args.skip_cuda_bootstrap)
 
     worker = StandaloneWorker(config)
     worker.run()

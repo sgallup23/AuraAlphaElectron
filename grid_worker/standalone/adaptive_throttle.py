@@ -28,16 +28,16 @@ log = logging.getLogger("standalone.throttle")
 CHECK_INTERVAL = 10
 
 # Thresholds for "other process" CPU usage (percentage of total CPU)
-# 30-core / 78GB desktop — only yield for extreme contention
-HEAVY_LOAD = 92    # only yield for truly maxed-out system
-MEDIUM_LOAD = 85   # significant external load — still keep most workers
-LIGHT_LOAD = 75    # normal ops — run at near-full capacity
+# Aggressive: trading bots + API + IBKR are expected background load, not contention
+HEAVY_LOAD = 85    # only yield for truly heavy workloads (games, video rendering)
+MEDIUM_LOAD = 70   # significant external load — still keep most workers
+LIGHT_LOAD = 50    # normal trading ops — run at near-full capacity
 
 # RAM threshold — if available RAM drops below this %, go minimal
-RAM_CRITICAL_PCT = 10  # 78GB machine: only panic below ~8GB free
+RAM_CRITICAL_PCT = 15  # 64GB machine: only panic below ~10GB free
 
 # How fast to ramp back up (prevents yo-yoing)
-RAMP_UP_STEP = 28  # ramp to full in 1 check on 28-worker machine
+RAMP_UP_STEP = 16  # ramp aggressively — reach max in ~2 checks
 RAMP_DOWN_INSTANT = True  # drop immediately when load detected
 
 
@@ -192,11 +192,12 @@ class AdaptiveThrottle:
 # ══════════════════════════════════════════════════════════════════════
 
 def _get_gpu_metrics() -> dict:
-    """Get GPU utilization and memory. Returns empty dict if no GPU."""
+    """Get GPU utilization, memory, and temperature. Returns empty dict if no GPU."""
     try:
         import subprocess
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total",
+            ["nvidia-smi",
+             "--query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5,
         )
@@ -207,11 +208,49 @@ def _get_gpu_metrics() -> dict:
                 "gpu_mem_pct": float(parts[1]),
                 "gpu_mem_used_mb": float(parts[2]),
                 "gpu_mem_total_mb": float(parts[3]),
+                "gpu_temp_c": float(parts[4]),
                 "gpu_available": True,
             }
     except Exception:
         pass
     return {"gpu_available": False}
+
+
+def _get_cpu_temp() -> float:
+    """Get CPU temperature in °C. Tries WMI via PowerShell (WSL2), falls back to thermal_zone."""
+    # WSL2: read from Windows WMI
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command",
+             "(Get-CimInstance MSAcpi_ThermalZoneTemperature -Namespace root/wmi "
+             "2>$null).CurrentTemperature"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            decikelvin = float(result.stdout.strip())
+            return round(decikelvin / 10.0 - 273.15, 1)
+    except Exception:
+        pass
+    # Linux native: /sys/class/thermal
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            return round(int(f.read().strip()) / 1000.0, 1)
+    except Exception:
+        pass
+    return -1.0  # unknown
+
+
+# Thermal thresholds (°C) — safe operating ranges
+CPU_TEMP_RAMP = 60     # below this: scale up aggressively
+CPU_TEMP_HOLD = 70     # above this: stop scaling up
+CPU_TEMP_REDUCE = 80   # above this: reduce workers
+CPU_TEMP_CRITICAL = 85 # above this: drop to minimum
+
+GPU_TEMP_RAMP = 65     # below this: enable GPU, scale up
+GPU_TEMP_HOLD = 75     # above this: stop GPU scaling
+GPU_TEMP_REDUCE = 82   # above this: disable GPU
+GPU_TEMP_CRITICAL = 88 # above this: force disable GPU
 
 
 class AutoTuner:
@@ -245,7 +284,13 @@ class AutoTuner:
         self._tune_interval = 30.0  # seconds between tune cycles
         self._last_tune = 0.0
 
-        # Bounds — aggressive for high-core machines
+        # Bounds — thermal governor controls the ceiling, not a fixed cap.
+        # initial_parallel is the RAM-aware ceiling computed by
+        # grid_worker_daemon.sh (cgroup MemoryHigh / per-worker budget).
+        # Scaling ABOVE it causes swap thrash: on a 47GB/22-core laptop
+        # with MemoryHigh=32G and ~1.5GB per worker, the RAM ceiling is
+        # 18 but cpu_count-4=28 — going to 22+ pushes 6GB into swap and
+        # tanks throughput. Treat initial_parallel as a hard upper bound.
         self._min_batch = 8
         self._max_batch = min(initial_parallel * 6, 400)
         self._min_parallel = 4
@@ -311,31 +356,60 @@ class AutoTuner:
                 adjustments.append(f"batch {self.batch_size}→{new_batch} (heavy jobs)")
                 self.batch_size = new_batch
 
-        # ── Parallel worker tuning ────────────────────────────────
-        # If CPU is <60% and RAM is healthy, we have headroom — ramp hard
-        if cpu_pct < 60 and ram_avail_pct > 25:
-            new_parallel = min(self.max_parallel + 8, self._max_parallel_cap)
-            if new_parallel != self.max_parallel:
-                adjustments.append(f"parallel {self.max_parallel}→{new_parallel} (CPU {cpu_pct:.0f}% idle)")
-                self.max_parallel = new_parallel
+        # ── Thermal-aware parallel worker tuning ─────────────────
+        # Temperature is the PRIMARY governor. CPU util + RAM are secondary.
+        cpu_temp = _get_cpu_temp()
+        cpu_temp_tag = f"{cpu_temp:.0f}°C" if cpu_temp > 0 else "N/A"
 
-        # If RAM is getting tight, reduce
+        if cpu_temp > CPU_TEMP_CRITICAL:
+            # Emergency: drop to minimum
+            new_parallel = self._min_parallel
+            if new_parallel != self.max_parallel:
+                adjustments.append(f"parallel {self.max_parallel}→{new_parallel} (CPU {cpu_temp_tag} CRITICAL)")
+                self.max_parallel = new_parallel
+        elif cpu_temp > CPU_TEMP_REDUCE:
+            # Hot: shed workers
+            new_parallel = max(self.max_parallel - 4, self._min_parallel)
+            if new_parallel != self.max_parallel:
+                adjustments.append(f"parallel {self.max_parallel}→{new_parallel} (CPU {cpu_temp_tag} hot)")
+                self.max_parallel = new_parallel
+        elif cpu_temp > CPU_TEMP_HOLD:
+            # Warm: hold steady, don't add more
+            pass
         elif ram_avail_pct < 15:
+            # RAM pressure overrides thermal headroom
             new_parallel = max(self.max_parallel - 4, self._min_parallel)
             if new_parallel != self.max_parallel:
                 adjustments.append(f"parallel {self.max_parallel}→{new_parallel} (RAM {ram_avail_pct:.0f}%)")
                 self.max_parallel = new_parallel
+        else:
+            # Cool CPU + healthy RAM: ramp up aggressively
+            new_parallel = min(self.max_parallel + 4, self._max_parallel_cap)
+            if new_parallel != self.max_parallel:
+                adjustments.append(
+                    f"parallel {self.max_parallel}→{new_parallel} "
+                    f"(CPU {cpu_temp_tag}, {cpu_pct:.0f}% util, thermal headroom)")
+                self.max_parallel = new_parallel
 
-        # ── GPU routing ───────────────────────────────────────────
+        # ── GPU thermal-aware routing ─────────────────────────────
         if gpu_metrics.get("gpu_available"):
             gpu_util = gpu_metrics.get("gpu_util_pct", 0)
             gpu_mem_pct = gpu_metrics.get("gpu_mem_pct", 0)
+            gpu_temp = gpu_metrics.get("gpu_temp_c", 0)
 
-            # GPU idle and available — enable GPU routing for ML jobs
-            if gpu_util < 50 and gpu_mem_pct < 70 and not self.gpu_preferred:
-                self.gpu_preferred = True
-                adjustments.append(f"GPU enabled (util={gpu_util:.0f}%, mem={gpu_mem_pct:.0f}%)")
-            # GPU overloaded — back off
+            if gpu_temp > GPU_TEMP_REDUCE:
+                # GPU too hot — disable
+                if self.gpu_preferred:
+                    self.gpu_preferred = False
+                    adjustments.append(f"GPU disabled ({gpu_temp:.0f}°C hot)")
+            elif gpu_temp < GPU_TEMP_RAMP and gpu_util < 70 and gpu_mem_pct < 70:
+                # GPU cool and available — enable
+                if not self.gpu_preferred:
+                    self.gpu_preferred = True
+                    adjustments.append(f"GPU enabled ({gpu_temp:.0f}°C, util={gpu_util:.0f}%)")
+            elif gpu_temp >= GPU_TEMP_HOLD and self.gpu_preferred:
+                # GPU warm — hold, but log it
+                pass
             elif (gpu_util > 90 or gpu_mem_pct > 85) and self.gpu_preferred:
                 self.gpu_preferred = False
                 adjustments.append(f"GPU disabled (util={gpu_util:.0f}%, mem={gpu_mem_pct:.0f}%)")

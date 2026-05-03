@@ -15,30 +15,24 @@ import requests
 log = logging.getLogger("standalone.api_client")
 
 # Retry settings
-MAX_RETRIES = 3
-BACKOFF_BASE = 1  # seconds: 1, 2, 4
+MAX_RETRIES = 5
+BACKOFF_BASE = 2  # seconds: 2, 4, 8, 16, 32
 
 
 class CoordinatorClient:
     """Thin HTTP wrapper around the coordinator contributor API."""
 
-    def __init__(self, coordinator_url: str, token: str, worker_id: str,
-                 verify_ssl: bool = True, coordinator_host: str = None):
+    def __init__(self, coordinator_url: str, token: str, worker_id: str):
         self.base_url = coordinator_url.rstrip("/")
         self.token = token
         self.worker_id = worker_id
         self.session = requests.Session()
-        headers = {
+        self.session.headers.update({
             "X-Contributor-Token": self.token,
             "X-Worker-Id": self.worker_id,
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (compatible; AuraAlpha-GridWorker/2.0)",
-        }
-        # Override Host header when connecting via IP to bypass DNS proxies
-        if coordinator_host:
-            headers["Host"] = coordinator_host
-        self.session.headers.update(headers)
-        self.session.verify = verify_ssl
+        })
         # Reasonable timeouts: (connect, read)
         self.timeout = (10, 60)
 
@@ -73,11 +67,18 @@ class CoordinatorClient:
                 resp.raise_for_status()
                 return resp
             except requests.exceptions.HTTPError as e:
-                # Don't retry on 4xx client errors (except 429)
-                if e.response is not None and 400 <= e.response.status_code < 500:
-                    if e.response.status_code != 429:
-                        raise
-                last_exc = e
+                # Retry on 429 (rate limit), 502/503/504 (server overloaded)
+                # Don't retry on other 4xx client errors
+                if e.response is not None:
+                    code = e.response.status_code
+                    if code in (429, 502, 503, 504):
+                        last_exc = e  # will retry
+                    elif 400 <= code < 500:
+                        raise  # client error, don't retry
+                    else:
+                        last_exc = e
+                else:
+                    last_exc = e
             except (requests.exceptions.ConnectionError,
                     requests.exceptions.Timeout,
                     requests.exceptions.ChunkedEncodingError) as e:
@@ -104,33 +105,37 @@ class CoordinatorClient:
         return resp.json()
 
     def register(self, capabilities: Dict[str, Any]) -> Dict[str, Any]:
-        """Register this worker with the coordinator.
-
-        capabilities should include: hostname, cpus, ram_gb, os, max_parallel
-        """
-        resp = self._request("POST", "register", json={
+        """Register this worker with the coordinator, including GPU info."""
+        body: Dict[str, Any] = {
             "hostname": capabilities.get("hostname", self.worker_id),
             "cpus": capabilities.get("cpu_count", capabilities.get("cpus", 1)),
             "ram_gb": capabilities.get("ram_gb", 0),
             "os": capabilities.get("os", "unknown"),
             "max_parallel": capabilities.get("max_parallel", 1),
-        })
+            "gpu_model": capabilities.get("gpu_model", ""),
+            "gpu_vram_gb": capabilities.get("gpu_vram_gb", 0),
+            "cuda_available": capabilities.get("cuda_available", False),
+        }
+        sjt = capabilities.get("supported_job_types")
+        if sjt is not None:
+            body["supported_job_types"] = list(sjt)
+        resp = self._request("POST", "register", json=body)
         return resp.json()
 
-    def dequeue(self, count: int = 5, job_types: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    def dequeue(
+        self,
+        count: int = 5,
+        job_types: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         """Request a batch of jobs from the coordinator.
 
         Args:
-            count: Max number of jobs to dequeue.
-            job_types: Optional list of job_type filters (e.g. ["ml_train"]).
-                When set, the coordinator skips other job types so this worker
-                can be biased to specific work (used during the 2026-04-27 GPU
-                fleet triage to force 4090 boxes to drain ml_train backlog).
-                The companion server-side filter is in
-                `phase2/app/routes/grid_contributor.py`.
+            count: Maximum number of jobs to claim.
+            job_types: If provided, server filters dequeue to these job_types
+                only. Lets the worker avoid wasting cycles on jobs it would
+                immediately skip (e.g. ml_train under STANDALONE_MODE).
 
-        Returns:
-            List of job dicts, possibly empty if no work available.
+        Returns list of job dicts, possibly empty if no work available.
         """
         body: Dict[str, Any] = {
             "worker_id": self.worker_id,
@@ -158,12 +163,40 @@ class CoordinatorClient:
         })
         return resp.json()
 
-    def heartbeat(self, job_ids: List[str]) -> Dict[str, Any]:
-        """Send heartbeat for active jobs to extend leases."""
-        resp = self._request("POST", "heartbeat", json={
+    def complete_batch(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Report multiple completed/failed jobs in a single request."""
+        resp = self._request("POST", "complete_batch", json={
+            "results": results,
+        })
+        return resp.json()
+
+    def heartbeat(
+        self,
+        job_ids: List[str],
+        hostname: str = "",
+        hardware: Optional[Dict[str, Any]] = None,
+        throughput_jpm: Optional[float] = None,
+        supported_job_types: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Send heartbeat with hardware info to extend leases and update registration."""
+        payload: Dict[str, Any] = {
             "worker_id": self.worker_id,
             "job_ids": job_ids,
-        })
+        }
+        if hostname:
+            payload["hostname"] = hostname
+        if hardware:
+            payload["cpu_cores"] = hardware.get("cpu_cores")
+            payload["memory_gb"] = hardware.get("memory_gb")
+            payload["gpu_model"] = hardware.get("gpu_model")
+            payload["gpu_vram_gb"] = hardware.get("gpu_vram_gb")
+            payload["cuda_available"] = hardware.get("cuda_available")
+            payload["gpu_active"] = hardware.get("gpu_active", False)
+        if throughput_jpm is not None:
+            payload["throughput_jpm"] = throughput_jpm
+        if supported_job_types is not None:
+            payload["supported_job_types"] = list(supported_job_types)
+        resp = self._request("POST", "heartbeat", json=payload)
         return resp.json()
 
     def download_data(self, region: str, symbol: str, dest_path: Path) -> bool:

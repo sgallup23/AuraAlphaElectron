@@ -9,6 +9,12 @@ let workerStartTime = null;
 let jobsCompleted = 0;
 let restartCount = 0;
 let logCallback = null;
+// Captured at startWorker() so auto-restart can re-launch with the same
+// settings (token, coordinator URL, worker-id) instead of falling back
+// to env vars and a hostname-derived id.
+let lastCoordinatorUrl = null;
+let lastToken = null;
+let lastWorkerId = null;
 
 const MAX_RESTARTS = 3;
 // Tailnet-first default. main.js passes the resolved URL after probing, so
@@ -55,77 +61,28 @@ function findPython() {
 // We pip-install --user (no admin needed) on every launch; pip is fast on
 // already-satisfied deps so the no-op cost is ~1s. Failures here are
 // non-fatal — worker.py will still try and surface a clear error.
+// CPU-only deps the standalone worker needs to run any job. torch+CUDA is
+// NOT in this list — it's a separate consent-gated download handled by
+// gpu_setup.js (maybeOfferGpuInstall) so users explicitly choose to fetch
+// the ~2 GB CUDA wheel. Without torch the worker still runs the CPU lane
+// (xgboost/lightgbm/sklearn/scipy all work CPU-only).
 const REQUIRED_PY_DEPS = [
-  'numpy>=1.24.0', 'polars>=0.20.0', 'psutil>=5.9.0',
+  'numpy>=1.24.0', 'polars>=0.20.0', 'pandas>=2.0.0', 'psutil>=5.9.0',
   'requests>=2.28.0', 'pyyaml>=6.0', 'yfinance>=0.2.0',
-  // scipy enables the lfilter fast path for EMA/RSI in worker.py
-  // (16×/7× speedup, numerically identical to the Python loop).
   'scipy>=1.11.0',
-  // ml_train trio + scikit-learn — required by phase2/app/services/ml_trainer_v2.py.
-  // Without these the Electron worker claims ml_train jobs and crashes on
-  // `import xgboost`, returning the misleading "insufficient data" error
-  // from job_router.py. Caused fleet-wide ml_train stall through 2026-04-27.
-  'xgboost>=3.0.0', 'lightgbm>=4.5.0', 'optuna>=4.0.0', 'scikit-learn>=1.4.0',
+  'xgboost>=2.0.0', 'lightgbm>=4.0.0', 'optuna>=3.4.0', 'scikit-learn>=1.3.0',
 ];
 
 function ensurePythonDeps(python, onLog) {
   try {
     const { execFileSync } = require('child_process');
     onLog && onLog('[worker] Checking Python dependencies...');
-
-    // Step 1: install the always-required base set (CPU-only deps).
     execFileSync(
       python,
       ['-m', 'pip', 'install', '--user', '--quiet', '--disable-pip-version-check', ...REQUIRED_PY_DEPS],
       { stdio: 'pipe', timeout: 180000 },
     );
-
-    // Step 2: if NVIDIA GPU present, ensure torch+CUDA is installed.
-    // Skip on CPU-only boxes — the torch CUDA wheel is ~2.5 GB and pulling it
-    // onto every laptop without a discrete GPU is wasteful. Probe nvidia-smi
-    // first; only install if a GPU is detected AND torch isn't already
-    // importable with cuda.
-    let hasGpu = false;
-    try {
-      const probeCmd = process.platform === 'win32' ? 'nvidia-smi.exe' : 'nvidia-smi';
-      execFileSync(probeCmd, ['--query-gpu=name', '--format=csv,noheader'],
-                   { stdio: 'pipe', timeout: 5000 });
-      hasGpu = true;
-    } catch (_) { /* no NVIDIA GPU present — skip torch install */ }
-
-    if (hasGpu) {
-      let torchOk = false;
-      try {
-        execFileSync(
-          python,
-          ['-c', 'import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)'],
-          { stdio: 'pipe', timeout: 10000 },
-        );
-        torchOk = true;
-        onLog && onLog('[worker] torch+CUDA already present');
-      } catch (_) { /* torch missing or CPU-only build — install */ }
-
-      if (!torchOk) {
-        onLog && onLog('[worker] Installing torch+CUDA (~2.5GB; may take several minutes on first run)...');
-        try {
-          execFileSync(
-            python,
-            ['-m', 'pip', 'install', '--user', '--quiet', '--disable-pip-version-check',
-             'torch',
-             '--index-url', 'https://download.pytorch.org/whl/cu124'],
-            { stdio: 'pipe', timeout: 600000 }, // 10-min budget for first install
-          );
-          onLog && onLog('[worker] torch+CUDA installed');
-        } catch (e) {
-          const m = (e && e.stderr) ? e.stderr.toString().slice(0, 400) : String(e).slice(0, 400);
-          onLog && onLog(`[worker] torch+CUDA install failed (continuing on CPU): ${m}`);
-        }
-      }
-    } else {
-      onLog && onLog('[worker] No NVIDIA GPU detected, skipping torch+CUDA install');
-    }
-
-    onLog && onLog('[worker] Python dependencies satisfied');
+    onLog && onLog('[worker] Python dependencies satisfied (CPU set)');
     return true;
   } catch (err) {
     const msg = (err && err.stderr) ? err.stderr.toString().slice(0, 400) : String(err).slice(0, 400);
@@ -134,28 +91,27 @@ function ensurePythonDeps(python, onLog) {
   }
 }
 
-// ── Find worker.py ────────────────────────────────────────────────────
-function findWorkerScript() {
-  // When packaged, extraResources lives at process.resourcesPath/grid_worker/
-  // Fall back to dev paths when running from source.
+// ── Find grid_worker directory ────────────────────────────────────────
+// Returns the directory containing the `standalone/` Python package.
+// We launch the worker via `python -m standalone` from this cwd, which
+// runs the canonical, parity-tested bundled module — not the legacy
+// 107 KB worker.py which had the 96% ml_train fail rate.
+function findGridWorkerDir() {
   const searchPaths = [];
 
-  // 1. Packaged installer: resources/grid_worker/worker.py
+  // 1. Packaged installer: resources/grid_worker/standalone/
   if (process.resourcesPath) {
-    searchPaths.push(path.join(process.resourcesPath, 'grid_worker', 'worker.py'));
+    searchPaths.push(path.join(process.resourcesPath, 'grid_worker'));
   }
   // 2. Local dev: grid_worker/ next to this file
-  searchPaths.push(path.join(__dirname, 'grid_worker', 'worker.py'));
+  searchPaths.push(path.join(__dirname, 'grid_worker'));
   // 3. Dev fallbacks
   searchPaths.push(
-    path.join(__dirname, '..', 'AuraCommandV2', 'grid_worker', 'worker.py'),
-    path.join(os.homedir(), 'AuraCommandV2', 'grid_worker', 'worker.py'),
-    path.join(os.homedir(), 'AuraCommandV2', 'frontend', 'grid_worker', 'worker.py'),
-    path.join(__dirname, 'worker.py'),
+    path.join(os.homedir(), 'AuraAlphaElectron', 'grid_worker'),
   );
 
   for (const p of searchPaths) {
-    if (fs.existsSync(p)) return p;
+    if (fs.existsSync(path.join(p, 'standalone', '__main__.py'))) return p;
   }
   return null;
 }
@@ -179,11 +135,34 @@ function parseOutput(data) {
   return text.trim();
 }
 
+// ── Mode → standalone-worker flag mapping ─────────────────────────────
+// dev    = light footprint, just research_backtest + signal_gen for testing
+// hybrid = standard fleet contributor with broad job-type coverage (no GPU)
+// max    = full set, full parallelism — what we run on our internal fleet
+const MODE_FLAGS = {
+  dev:    { parallel: 4,  batch: 4,  jobTypes: 'research_backtest,backtest,signal_gen' },
+  hybrid: { parallel: 8,  batch: 8,  jobTypes: 'optimization,research_backtest,signal_gen,alpha_factory,ohlcv_refresh,backtest' },
+  max:    { parallel: 14, batch: 12, jobTypes: '' /* empty = all server-allowed types */ },
+};
+
 // ── Start worker ──────────────────────────────────────────────────────
-// `coordinatorUrl` is passed in by main.js after network-config resolves the
-// best reachable endpoint (handles xFi/SafeDNS-style network filters by
-// falling through primary → backup → direct IP → user-supplied tunnel URL).
-function startWorker(mode, onLog, coordinatorUrl) {
+// Spawns `python -m standalone` with mode-derived flags. The Python side
+// is the canonical bundled module at grid_worker/standalone/, kept in
+// parity with prodesk's distributed_research/standalone/ and verified
+// before each release. The legacy grid_worker/worker.py is no longer
+// invoked by this function.
+//
+// `coordinatorUrl` is passed by main.js after network-config resolves the
+// best reachable endpoint (handles xFi/SafeDNS-style filters by falling
+// through primary → backup → direct IP → user-supplied tunnel URL).
+//
+// Token resolution order:
+//   1. token argument (preferred — main.js reads it from the user's
+//      authenticated session and passes it in)
+//   2. AURA_TOKEN environment variable
+// If neither is present, we refuse to start and surface a clear message
+// to the renderer so the user can sign in.
+function startWorker(mode, onLog, coordinatorUrl, token, workerId) {
   if (workerProcess) {
     return { success: false, error: 'Worker already running' };
   }
@@ -193,46 +172,68 @@ function startWorker(mode, onLog, coordinatorUrl) {
     return { success: false, error: 'Python not found. Install Python 3.10+ and add to PATH.' };
   }
 
-  const script = findWorkerScript();
-  if (!script) {
-    return { success: false, error: 'worker.py not found. Place it in grid_worker/ directory.' };
+  const gridDir = findGridWorkerDir();
+  if (!gridDir) {
+    return { success: false, error: 'grid_worker/standalone/ not found in app resources.' };
+  }
+
+  const resolvedToken = (token && String(token).trim()) || process.env.AURA_TOKEN || '';
+  if (!resolvedToken) {
+    return {
+      success: false,
+      error: 'No contributor token available. Sign in to Aura Alpha to enable the grid worker.',
+    };
   }
 
   logCallback = onLog || (() => {});
-  workerMode = mode || 'compute';
+  workerMode = mode || 'hybrid';
   jobsCompleted = 0;
   workerStartTime = Date.now();
+  lastCoordinatorUrl = coordinatorUrl || null;
+  lastToken = resolvedToken;
 
-  // Install/refresh Python dependencies before spawning. Non-blocking on
-  // failure — worker.py will still launch and emit a clear error if
-  // numpy/etc are still missing.
+  // Install/refresh CPU-only Python deps before spawning. torch+CUDA is
+  // NOT installed here — that's gpu_setup.js's consent-gated path.
   ensurePythonDeps(python, logCallback);
 
   const url = (coordinatorUrl && typeof coordinatorUrl === 'string' && coordinatorUrl.trim())
     ? coordinatorUrl.trim()
     : DEFAULT_COORDINATOR_URL;
 
-  const args = [
-    script,
-    '--coordinator-url', url,
-    '--mode', workerMode,
-    '--max-parallel', '20',
-  ];
+  const flags = MODE_FLAGS[workerMode] || MODE_FLAGS.hybrid;
+  const resolvedWorkerId = (workerId && String(workerId).trim()) ||
+                           `${os.hostname()}-electron`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  lastWorkerId = resolvedWorkerId;
 
-  // Optional bias to specific job types: set AURA_JOB_TYPES (comma-separated,
-  // e.g. "ml_train" or "ml_train,optimization") in process env to force this
-  // worker to only pull those job types. Used during the 2026-04-27 GPU-fleet
-  // triage to confirm 4090 boxes had bandwidth for ml_train. Honored by
-  // grid_worker/standalone/worker.py at the dequeue call site.
-  const env = { ...process.env, BATCH_SIZE: '25' };
+  const args = [
+    '-m', 'standalone',
+    '--token', resolvedToken,
+    '--coordinator-url', url,
+    '--worker-id', resolvedWorkerId,
+    '--max-parallel', String(flags.parallel),
+    '--batch-size', String(flags.batch),
+    // Always skip the Python-side CUDA bootstrap; gpu_setup.js owns that
+    // flow with explicit user consent + ~2 GB download dialog.
+    '--skip-cuda-bootstrap',
+  ];
+  if (flags.jobTypes) args.push('--job-types', flags.jobTypes);
+
+  // Env-var bias still honored: AURA_JOB_TYPES overrides --job-types if
+  // set on the process (used during 2026-04-27 GPU-fleet triage to bias
+  // 4090 boxes toward ml_train). Standalone reads this via config.py.
+  const env = {
+    ...process.env,
+    AURA_SKIP_CUDA_BOOTSTRAP: '1', // belt + suspenders next to --skip-cuda-bootstrap
+  };
 
   try {
     workerProcess = spawn(python, args, {
+      cwd: gridDir, // so `-m standalone` resolves to grid_worker/standalone/
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    logCallback(`[worker] Started PID ${workerProcess.pid} (${python} ${workerMode} mode)`);
+    logCallback(`[worker] Started PID ${workerProcess.pid} (${python} mode=${workerMode} parallel=${flags.parallel} batch=${flags.batch})`);
 
     workerProcess.stdout.on('data', (data) => {
       const msg = parseOutput(data);
@@ -249,11 +250,13 @@ function startWorker(mode, onLog, coordinatorUrl) {
       const pid = workerProcess?.pid;
       workerProcess = null;
 
-      // Auto-restart on crash (not on intentional stop)
+      // Auto-restart on crash (not on intentional stop). Reuse the same
+      // coordinator URL / token / worker-id so the restart isn't a different
+      // worker from the API's perspective.
       if (code !== 0 && code !== null && restartCount < MAX_RESTARTS) {
         restartCount++;
         logCallback(`[worker] Auto-restart attempt ${restartCount}/${MAX_RESTARTS}...`);
-        setTimeout(() => startWorker(workerMode, logCallback), 2000);
+        setTimeout(() => startWorker(workerMode, logCallback, lastCoordinatorUrl, lastToken, lastWorkerId), 2000);
       } else if (restartCount >= MAX_RESTARTS) {
         logCallback(`[worker] Max restarts (${MAX_RESTARTS}) reached. Giving up.`);
         restartCount = 0;

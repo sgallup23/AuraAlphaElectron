@@ -44,7 +44,8 @@ class WorkerConfig:
 
     # ── Compute limits ─────────────────────────────────────────────────
     max_parallel: int = 0  # 0 = auto-detect
-    batch_size: int = 50
+    batch_size: int = 5
+    job_types: list = field(default_factory=list)  # filter dequeue to these types only; empty = all
 
     # ── Paths ──────────────────────────────────────────────────────────
     cache_dir: Path = field(default_factory=lambda: Path.home() / ".aura-worker" / "data")
@@ -54,9 +55,9 @@ class WorkerConfig:
     heartbeat_interval: int = 30  # seconds
     job_timeout: int = 600  # seconds per job
 
-    # ── Detected hardware ──────────────────────────────────────────────
-    cpu_count: int = field(default_factory=lambda: os.cpu_count() or 1)
-    ram_gb: float = field(default_factory=_auto_ram_gb)
+    # ── Detected hardware (overridable via env/YAML for WSL2 misreporting) ──
+    cpu_count: int = field(default_factory=lambda: int(os.environ.get("AURA_CPU_COUNT", 0)) or os.cpu_count() or 1)
+    ram_gb: float = field(default_factory=lambda: float(os.environ.get("AURA_RAM_GB", 0)) or _auto_ram_gb())
 
     def __post_init__(self) -> None:
         # Auto-generate worker_id if not set
@@ -91,8 +92,8 @@ class WorkerConfig:
                     data = yaml.safe_load(f) or {}
                 for key in (
                     "coordinator_url", "token", "worker_id", "max_parallel",
-                    "batch_size", "cache_dir", "log_dir", "heartbeat_interval",
-                    "job_timeout",
+                    "batch_size", "job_types", "cache_dir", "log_dir",
+                    "heartbeat_interval", "job_timeout", "cpu_count", "ram_gb",
                 ):
                     if key in data:
                         kwargs[key] = data[key]
@@ -105,12 +106,28 @@ class WorkerConfig:
             "AURA_TOKEN": "token",
             "AURA_WORKER_ID": "worker_id",
             "AURA_MAX_PARALLEL": "max_parallel",
+            "AURA_JOB_TYPES": "job_types",  # comma-separated
         }
+        # Hardware overrides (WSL2 misreports these)
+        env_hw = {
+            "AURA_CPU_COUNT": "cpu_count",
+            "AURA_RAM_GB": "ram_gb",
+        }
+        for env_key, config_key in env_hw.items():
+            val = os.environ.get(env_key)
+            if val:
+                if config_key == "cpu_count":
+                    kwargs[config_key] = int(val)
+                elif config_key == "ram_gb":
+                    kwargs[config_key] = float(val)
+
         for env_key, config_key in env_map.items():
             val = os.environ.get(env_key)
             if val is not None:
                 if config_key == "max_parallel":
                     kwargs[config_key] = int(val)
+                elif config_key == "job_types":
+                    kwargs[config_key] = [s.strip() for s in val.split(",") if s.strip()]
                 else:
                     kwargs[config_key] = val
 

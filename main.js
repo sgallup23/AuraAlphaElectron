@@ -8,6 +8,7 @@ const {
   session,
   protocol,
   net,
+  safeStorage,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -26,6 +27,53 @@ if (!gotLock) {
 // ── Paths ─────────────────────────────────────────────────────────────
 const userDataPath = app.getPath('userData');
 const stateFile = path.join(userDataPath, 'window-state.json');
+const authFile = path.join(userDataPath, 'auth.json');
+
+// ── Auth-token store (used by the grid worker) ────────────────────────
+// The standalone Python worker requires a contributor token to register
+// with the coordinator. The renderer signs the user in and pushes their
+// token here via the `set-auth-token` IPC. We persist it on disk so the
+// worker can auto-start on next launch without forcing a re-login.
+//
+// Storage uses Electron's safeStorage (DPAPI on Windows, Keychain on
+// macOS, libsecret on Linux) when available; falls back to plaintext
+// only if the platform truly can't encrypt. Falling back is logged so
+// a user/operator can spot it.
+let currentToken = null;
+
+function loadStoredToken() {
+  try {
+    if (!fs.existsSync(authFile)) return null;
+    const raw = JSON.parse(fs.readFileSync(authFile, 'utf8'));
+    if (raw && raw.encrypted && safeStorage.isEncryptionAvailable()) {
+      try {
+        return safeStorage.decryptString(Buffer.from(raw.encrypted, 'base64')) || null;
+      } catch (_) { return null; }
+    }
+    return (raw && typeof raw.token === 'string' && raw.token) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function persistToken(token) {
+  try {
+    fs.mkdirSync(path.dirname(authFile), { recursive: true });
+    if (safeStorage.isEncryptionAvailable()) {
+      const buf = safeStorage.encryptString(String(token || ''));
+      fs.writeFileSync(authFile, JSON.stringify({ encrypted: buf.toString('base64') }, null, 2));
+    } else {
+      console.warn('[auth] safeStorage not available — token persisted in plaintext');
+      fs.writeFileSync(authFile, JSON.stringify({ token: String(token || '') }, null, 2));
+    }
+  } catch (err) {
+    console.error('[auth] persistToken failed:', err.message);
+  }
+}
+
+function clearPersistedToken() {
+  try { fs.existsSync(authFile) && fs.unlinkSync(authFile); } catch (_) { /* ignore */ }
+}
 const isDev = !app.isPackaged;
 const DIST_PATH = path.join(__dirname, 'dist');
 // API_BASE is resolved at startup by network-config.js. Resolve order:
@@ -341,10 +389,33 @@ function registerIPC() {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('worker-log', msg);
       }
-    }, API_BASE);
+    }, API_BASE, currentToken);
   });
 
   ipcMain.handle('stop-worker', () => stopWorker());
+
+  // ── Auth-token IPC ─────────────────────────────────────────────────
+  // Renderer pushes the token here right after a successful sign-in.
+  // Persists encrypted; replaces any in-flight worker so the new token
+  // takes effect without forcing the user to restart the worker.
+  ipcMain.handle('set-auth-token', (_, token) => {
+    const t = (token && String(token).trim()) || '';
+    if (!t) return { ok: false, error: 'Empty token' };
+    currentToken = t;
+    persistToken(t);
+    return { ok: true };
+  });
+
+  ipcMain.handle('clear-auth-token', () => {
+    currentToken = null;
+    clearPersistedToken();
+    try { stopWorker(); } catch (_) { /* ignore */ }
+    return { ok: true };
+  });
+
+  ipcMain.handle('get-auth-state', () => ({
+    hasToken: Boolean(currentToken),
+  }));
 
   ipcMain.handle('get-system-info', () => {
     const cpus = os.cpus();
@@ -480,27 +551,39 @@ app.whenReady().then(async () => {
 
   setupProtocol();
   setupCorsBypass();
+  // Load any persisted token before IPC + auto-start, so a returning user
+  // who was signed in last session gets their worker auto-launched without
+  // a re-login. New users (no token yet) skip auto-start with a clear msg.
+  currentToken = loadStoredToken();
   registerIPC();
   createWindow();
   createTray();
   initUpdater();
 
-  // Auto-start the grid worker once API_BASE is resolved. If the probe failed,
-  // skip auto-start so we don't spam connection errors — user can start it
-  // manually after fixing networking via the modal/Settings page.
+  // Auto-start the grid worker once API_BASE is resolved AND we have a
+  // contributor token. No token = the user hasn't signed in yet; we
+  // surface a renderer hint instead of attempting to start.
   if (API_BASE && API_SOURCE !== 'none') {
     setTimeout(() => {
       try {
         const status = getWorkerStatus();
         if (!status.running) {
-          // worker.py accepts --mode {hybrid|max|dev}. 'max' = full compute lane,
-          // appropriate for dedicated rigs. Renderer can stop/restart with a
-          // different mode via the IPC handlers below.
+          if (!currentToken) {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send(
+                'worker-log',
+                '[worker] Sign in to Aura Alpha to enable the grid worker (no token yet).',
+              );
+            }
+            return;
+          }
+          // Mode `max` = full compute lane, appropriate for dedicated rigs.
+          // Renderer can stop/restart with a different mode via IPC.
           startWorker('max', (msg) => {
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send('worker-log', msg);
             }
-          }, API_BASE);
+          }, API_BASE, currentToken);
         }
       } catch (err) {
         console.error('[auto-start] worker failed to start:', err);
@@ -525,7 +608,7 @@ app.whenReady().then(async () => {
           log('[gpu-setup] Restarting worker to pick up GPU…');
           try {
             stopWorker();
-            setTimeout(() => startWorker('max', log, API_BASE), 4000);
+            setTimeout(() => startWorker('max', log, API_BASE, currentToken), 4000);
           } catch (err) {
             log(`[gpu-setup] restart failed: ${err.message}`);
           }

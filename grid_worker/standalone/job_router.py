@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -27,15 +28,33 @@ from typing import Any, Dict, Optional
 
 log = logging.getLogger("standalone.job_router")
 
+# ── Standalone mode ──────────────────────────────────────────────────
+# When STANDALONE_MODE=1, only research_backtest is executed.
+# All other job types are skipped with a polite "requires full install" message.
+# This lets the same file work in both the full prodesk install and the
+# lightweight distributed worker package.
+STANDALONE_MODE = os.environ.get("STANDALONE_MODE", "0") == "1"
+FULL_INSTALL = os.environ.get("FULL_INSTALL", "0") == "1"
+
+# Job types that require the full prodesk installation.
+# Skipped in standalone mode UNLESS FULL_INSTALL=1 (desktop with full repo).
+_FULL_INSTALL_JOB_TYPES = frozenset({
+    "signal_gen",
+    "ml_train",
+    "walk_forward",
+    "optimization",
+    "alpha_factory",
+    "ohlcv_refresh",
+})
+
 # Project base — workers running from prodesk (dev/internal only).
 # External users have no prodesk; BASE will be None and only standalone job
 # types (research_backtest) will run. Set AURA_PRODESK_PATH for non-default
 # locations. NOTE: do not embed user-specific UNC fallbacks here — they leak
 # into every external install.
-import os as _os
 BASE = None
 _candidates = []
-_env_override = _os.environ.get("AURA_PRODESK_PATH")
+_env_override = os.environ.get("AURA_PRODESK_PATH")
 if _env_override:
     _candidates.append(Path(_env_override))
 _candidates.extend([
@@ -75,6 +94,24 @@ def route_job(job_dict: Dict[str, Any], cache_dir: Path) -> Dict[str, Any]:
 
     t0 = time.time()
 
+    log.info("Job %s type=%s payload_keys=%s payload=%s", job_id, job_type, list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__, str(payload)[:200])
+
+    # ── Standalone guard: skip job types that need the full project ───
+    if STANDALONE_MODE and not FULL_INSTALL and job_type in _FULL_INSTALL_JOB_TYPES:
+        log.info(
+            "Standalone mode — skipping job %s (type=%s): requires full installation",
+            job_id, job_type,
+        )
+        return {
+            "job_id": job_id,
+            "status": "completed",
+            "metrics": {
+                "skipped": True,
+                "reason": "standalone worker — job type requires full installation",
+            },
+            "execution_time": round(time.time() - t0, 2),
+        }
+
     try:
         if job_type == "research_backtest":
             result = _run_research_backtest(job_dict, cache_dir)
@@ -88,8 +125,6 @@ def route_job(job_dict: Dict[str, Any], cache_dir: Path) -> Dict[str, Any]:
             result = _run_optimization(payload, cache_dir)
         elif job_type == "alpha_factory":
             result = _run_alpha_factory(payload, cache_dir)
-        elif job_type == "deep_train":
-            result = _run_deep_train(payload)
         elif job_type == "ohlcv_refresh":
             result = _run_ohlcv_refresh(payload)
         else:
@@ -98,11 +133,14 @@ def route_job(job_dict: Dict[str, Any], cache_dir: Path) -> Dict[str, Any]:
                 "error": f"Unknown job type: {job_type}",
             }
 
+        if result.get("status") == "failed":
+            log.error("Job %s (%s) failed: %s", job_id, job_type, result.get("error", "unknown"))
         result["job_id"] = job_id
         result["execution_time"] = round(time.time() - t0, 2)
         return result
 
     except Exception as e:
+        log.error("Job %s (%s) exception: %s", job_id, job_type, e)
         return {
             "job_id": job_id,
             "status": "failed",
@@ -176,47 +214,63 @@ def _run_signal_gen(payload: Dict, cache_dir: Path) -> Dict:
 
 
 def _run_ml_train(payload: Dict) -> Dict:
-    """Train ML model for one strategy.
+    """Train ML model for a single strategy using GPU.
 
     Payload: {strategy: str, trials: int}
+    Calls train_strategy_model_v2 directly (no subprocess fork) to avoid
+    GPU context issues with ProcessPoolExecutor.
     """
     if not BASE:
         return {"status": "failed", "error": "Project base not found"}
 
     strategy = payload.get("strategy", "")
-    trials = payload.get("trials", 30)
+    trials = payload.get("trials", 100)  # Pushed to 100 for deeper GPU utilization
 
-    return _run_subprocess(
-        "ml_train",
-        [sys.executable, str(BASE / "scripts" / "train_loop.py"),
-         "--strategy", strategy, "--trials", str(trials)],
-        timeout=600,
-    )
+    if not strategy:
+        # Payload empty (common when PG dequeue strips payload).
+        # Pick a random trainable strategy so each job does useful work.
+        try:
+            from phase2.app.services.ml_trainer_v2 import _load_backtest_labels
+            labels, _ = _load_backtest_labels("us")
+            strategy_counts = {}
+            for (sym, date, strat), label in labels.items():
+                strategy_counts[strat] = strategy_counts.get(strat, 0) + 1
+            trainable = [s for s, c in strategy_counts.items() if c >= 100]
+            if trainable:
+                import random
+                strategy = random.choice(trainable)
+                log.info("No strategy in payload — randomly selected: %s", strategy)
+            else:
+                return {"status": "failed", "error": "No trainable strategies found"}
+        except Exception as e:
+            return {"status": "failed", "error": f"Strategy selection failed: {e}"}
 
+    sys.path.insert(0, str(BASE))
+    t0 = time.time()
+    try:
+        from phase2.app.services.ml_trainer_v2 import train_strategy_model_v2
+        result = train_strategy_model_v2(strategy, "us", n_trials=trials)
+        elapsed = round(time.time() - t0, 1)
 
-def _run_deep_train(payload: Dict) -> Dict:
-    """Train the deep signal TCN model.
-
-    Payload: {epochs?: int, lr?: float, batch_size?: int, max_symbols?: int}
-    Long-running (~5-30 min on a 4090). Subprocess-invokes
-    scripts/train_deep_signal.py which builds dataset + trains TCN +
-    saves to state/ml_models/deep_signal.pt. GPU-saturating.
-    """
-    if not BASE:
-        return {"status": "failed", "error": "Project base not found"}
-
-    epochs = int(payload.get("epochs", 50))
-    lr = float(payload.get("lr", 0.0003))
-    batch_size = int(payload.get("batch_size", 64))
-    max_symbols = int(payload.get("max_symbols", 200))
-
-    return _run_subprocess(
-        "deep_train",
-        [sys.executable, str(BASE / "scripts" / "train_deep_signal.py"),
-         "--epochs", str(epochs), "--lr", str(lr),
-         "--batch-size", str(batch_size)],
-        timeout=3600,
-    )
+        if result:
+            return {
+                "status": "completed",
+                "metrics": {
+                    "strategy": strategy,
+                    "accuracy": result.get("accuracy", 0),
+                    "auc_roc": result.get("auc_roc", 0),
+                    "train_samples": result.get("train_samples", 0),
+                    "gpu_used": result.get("gpu_used", False),
+                    "elapsed_seconds": elapsed,
+                },
+            }
+        else:
+            return {
+                "status": "failed",
+                "error": f"train_strategy_model_v2 returned None for {strategy} (insufficient data or split too small)",
+            }
+    except Exception as e:
+        return {"status": "failed", "error": f"ml_train error for {strategy}: {e}"}
 
 
 def _run_walk_forward(payload: Dict, cache_dir: Path) -> Dict:
@@ -236,10 +290,15 @@ def _run_walk_forward(payload: Dict, cache_dir: Path) -> Dict:
 
         db.init_db()
 
-        # Look up candidate spec from DB
-        import sqlite3
-        conn = sqlite3.connect(str(BASE / "research_db" / "research.db"))
-        conn.row_factory = sqlite3.Row
+        # Look up candidate spec from DB (PostgreSQL via database_pg)
+        try:
+            sys.path.insert(0, str(BASE))
+            from phase2.app.database_pg import get_db as _pg_get_db
+            conn = _pg_get_db()
+        except Exception:
+            # Fallback for standalone workers without PostgreSQL access
+            from research_engine.research_database import _get_conn
+            conn = _get_conn().__enter__()
         row = conn.execute(
             "SELECT traits, family, direction FROM candidates WHERE candidate_id = ?",
             (candidate_id,),
@@ -272,20 +331,19 @@ def _run_walk_forward(payload: Dict, cache_dir: Path) -> Dict:
 def _run_optimization(payload: Dict, cache_dir: Path) -> Dict:
     """Run parameter optimization for a strategy.
 
-    Payload: {strategy: str, region: str}
+    Payload: {strategy: str}
+    athena_optimizer.py accepts --strategy (single) or sweeps all.
+    Does NOT accept --region.
     """
     if not BASE:
         return {"status": "failed", "error": "Project base not found"}
 
     strategy = payload.get("strategy", "")
-    region = payload.get("region", "us")
+    cmd = [sys.executable, str(BASE / "data" / "athena_optimizer.py"), "--parallel"]
+    if strategy and strategy not in ("all", "by_strategy", "by_symbol", "by_region", "per_signal", "meta"):
+        cmd.extend(["--strategy", strategy])
 
-    return _run_subprocess(
-        "optimization",
-        [sys.executable, str(BASE / "data" / "athena_optimizer.py"),
-         "--strategy", strategy, "--region", region],
-        timeout=900,
-    )
+    return _run_subprocess("optimization", cmd, timeout=900)
 
 
 def _run_alpha_factory(payload: Dict, cache_dir: Path) -> Dict:
@@ -357,12 +415,22 @@ def _run_subprocess(
 ) -> Dict:
     """Run a command as a subprocess and capture result."""
     try:
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(BASE) if BASE else "",
+            "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", "0"),
+            "OMP_NUM_THREADS": os.environ.get("OMP_NUM_THREADS", "1"),
+            "OPENBLAS_NUM_THREADS": os.environ.get("OPENBLAS_NUM_THREADS", "1"),
+            "MKL_NUM_THREADS": os.environ.get("MKL_NUM_THREADS", "1"),
+            "NUMBA_NUM_THREADS": os.environ.get("NUMBA_NUM_THREADS", "1"),
+        }
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout,
             cwd=str(BASE) if BASE else None,
+            env=env,
         )
 
         if result.returncode == 0:
