@@ -6,6 +6,7 @@ Retry logic with exponential backoff.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,22 +20,55 @@ MAX_RETRIES = 5
 BACKOFF_BASE = 2  # seconds: 2, 4, 8, 16, 32
 
 
+def _sanitize_for_json(obj: Any) -> Any:
+    """Replace NaN/Inf floats with None recursively. requests' default JSON
+    encoder uses allow_nan=False for HTTP wire-safety, which throws
+    InvalidJSONError on numpy stat results that produce nan/inf (e.g. from
+    divide-by-zero in drawdown calc). Sanitize before sending so workers
+    don't drop legitimate completions on a wire-format technicality."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    return obj
+
+
 class CoordinatorClient:
     """Thin HTTP wrapper around the coordinator contributor API."""
 
-    def __init__(self, coordinator_url: str, token: str, worker_id: str):
+    def __init__(
+        self,
+        coordinator_url: str,
+        token: str,
+        worker_id: str,
+        fallback_urls: Optional[List[str]] = None,
+    ):
         self.base_url = coordinator_url.rstrip("/")
         self.token = token
         self.worker_id = worker_id
+        # Accepted for back-compat with the fleet's worker.py (which threads
+        # fallback_urls through from WorkerConfig). Not used here yet —
+        # rotation happens at the worker level on a hard ConnectionError.
+        self.fallback_urls = list(fallback_urls or [])
         self.session = requests.Session()
+        # Bigger urllib3 pool — default 10 saturates under 14-thread fleet load.
+        # Faster eviction on dead sockets (WSL2 gateway-IP flap pattern).
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=10, pool_maxsize=20, pool_block=False,
+        )
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
         self.session.headers.update({
             "X-Contributor-Token": self.token,
             "X-Worker-Id": self.worker_id,
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (compatible; AuraAlpha-GridWorker/2.0)",
         })
-        # Reasonable timeouts: (connect, read)
-        self.timeout = (10, 60)
+        # (connect, read). 15s read keeps total recovery under 140s vs the
+        # old 60s × 5-retry chain at ~360s. Healthy server returns <1s.
+        self.timeout = (10, 15)
 
     # ── Internal helpers ───────────────────────────────────────────────
 
@@ -54,12 +88,16 @@ class CoordinatorClient:
         url = self._url(path)
         last_exc: Optional[Exception] = None
 
+        # Strip NaN/Inf so requests' allow_nan=False JSON encoder doesn't drop
+        # the call. Done once per _request rather than per retry.
+        json_safe = _sanitize_for_json(json) if json is not None else None
+
         for attempt in range(MAX_RETRIES):
             try:
                 resp = self.session.request(
                     method=method,
                     url=url,
-                    json=json,
+                    json=json_safe,
                     params=params,
                     stream=stream,
                     timeout=timeout or self.timeout,

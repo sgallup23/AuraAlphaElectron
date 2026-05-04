@@ -93,10 +93,24 @@ class StandaloneWorker:
             caps["cuda_available"] = cuda_available
         except Exception:
             pass
-        # Declare what we can actually run. Empty list = no narrowing (server
-        # falls back to legacy all-7 list for backward compat with v9.4.10).
+        # Declare what we can actually run. Three layers:
+        #   1. Explicit --job-types CLI flag (operator override) wins.
+        #   2. No flag + phase2/ on disk (dev/internal box) → server falls
+        #      back to legacy all-7 list (preserves WSL fleet behavior).
+        #   3. No flag + no phase2/ (customer Electron install) → narrow to
+        #      handlers that don't import phase2. Otherwise the server
+        #      dispatches ml_train/optimization/walk_forward/etc., they hit
+        #      `if not BASE: return failed` in job_router._run_*, and the
+        #      customer's worker fails 100% of dispatched work.
         if self.config.job_types:
             caps["supported_job_types"] = list(self.config.job_types)
+        else:
+            try:
+                from .job_router import BASE as _base
+            except Exception:
+                _base = None
+            if _base is None:
+                caps["supported_job_types"] = ["research_backtest", "backtest"]
         return caps
 
     def _throughput(self) -> float:
