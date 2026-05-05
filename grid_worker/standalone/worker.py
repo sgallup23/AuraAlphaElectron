@@ -50,6 +50,22 @@ class StandaloneWorker:
         self.throttle = AdaptiveThrottle(max_parallel=config.max_parallel)
         self.tuner = AutoTuner(initial_parallel=config.max_parallel, initial_batch=config.batch_size)
 
+        # Server-driven compute config (LIGHT/BALANCED/HEAVY operator toggle).
+        # Polled by _compute_config_loop; consulted in main loop to clamp
+        # throttle.max_parallel and to filter the effective job_types list so
+        # the operator's choice in the Research Cluster top bar actually
+        # reaches every worker, not just one.
+        self._server_compute_cap: Optional[int] = None
+        self._server_allowed_jobs: Optional[set] = None  # set[str] or None=allow all
+        self._server_idle: bool = False  # mode == "idle" → don't dequeue
+        self._compute_config_thread: Optional[Thread] = None
+        # COMPUTE_CONFIG_POLL_SEC: how often to refresh from coordinator.
+        # 30s mirrors the ControlBar UI poll, so operator changes propagate
+        # to all workers within ~1 minute end-to-end.
+        self._compute_config_poll_sec = int(
+            os.environ.get("AURA_COMPUTE_CONFIG_POLL_SEC", "30")
+        )
+
         # GPU info (cached at startup)
         self._gpu_info: Dict[str, Any] = {"cpu_cores": config.cpu_count, "memory_gb": config.ram_gb}
         try:
@@ -148,6 +164,68 @@ class StandaloneWorker:
             target=self._heartbeat_loop, daemon=True, name="heartbeat"
         )
         self._heartbeat_thread.start()
+
+    # ── Compute config poller ─────────────────────────────────────────
+    # GET /api/skynet/compute-config every N seconds. Public endpoint, no
+    # auth needed. Surfaces operator's LIGHT/BALANCED/HEAVY/IDLE choice into
+    # this worker's effective parallelism + allowed job types.
+
+    def _compute_config_loop(self) -> None:
+        url = self.config.coordinator_url.rstrip("/") + "/api/skynet/compute-config"
+        while not self._shutdown.is_set():
+            try:
+                r = requests.get(url, timeout=10)
+                if r.ok:
+                    data = r.json() or {}
+                    applied = data.get("applied") or {}
+                    workers = applied.get("workers") or {}
+                    cap = workers.get("_cap")
+                    if isinstance(cap, int) and cap >= 0:
+                        self._server_compute_cap = cap
+                    jobs = applied.get("jobs")
+                    if isinstance(jobs, dict) and jobs:
+                        # Allowed = the set of job types the operator left True.
+                        # Empty set is a legit "block all" if every job is False.
+                        self._server_allowed_jobs = {
+                            k for k, v in jobs.items() if v
+                        }
+                    mode = (applied.get("mode") or "").lower()
+                    self._server_idle = (mode == "idle") or (cap == 0)
+                    log.debug(
+                        "compute-config: ui_mode=%s cap=%s allowed=%s idle=%s",
+                        applied.get("ui_mode"), cap, self._server_allowed_jobs,
+                        self._server_idle,
+                    )
+            except Exception as e:
+                log.debug("compute-config poll error: %s", e)
+            self._shutdown.wait(timeout=self._compute_config_poll_sec)
+
+    def _start_compute_config_poller(self) -> None:
+        self._compute_config_thread = Thread(
+            target=self._compute_config_loop, daemon=True, name="compute-config",
+        )
+        self._compute_config_thread.start()
+
+    def _effective_max_parallel(self, tuner_target: Optional[int] = None) -> int:
+        """Take MIN of: CLI cap, tuner target, server-side operator cap.
+        Server cap honors the LIGHT/BALANCED/HEAVY toggle in the UI."""
+        eff = int(self.config.max_parallel)
+        if tuner_target is not None and tuner_target > 0:
+            eff = min(eff, int(tuner_target))
+        if self._server_compute_cap is not None:
+            eff = min(eff, int(self._server_compute_cap))
+        return max(1, eff)
+
+    def _effective_job_types(self) -> Optional[List[str]]:
+        """Intersect operator-allowed jobs with our CLI --job-types.
+        Returns None to mean 'no filter' (server picks)."""
+        cli = list(self.config.job_types) if self.config.job_types else None
+        allowed = self._server_allowed_jobs
+        if allowed is None:
+            return cli
+        if cli is None:
+            return list(allowed) if allowed else []
+        return [j for j in cli if j in allowed]
 
     # ── Batch Execution ───────────────────────────────────────────────
 
@@ -358,6 +436,8 @@ class StandaloneWorker:
 
         # Start heartbeat thread
         self._start_heartbeat()
+        # Start compute-config poller (LIGHT/BALANCED/HEAVY operator toggle)
+        self._start_compute_config_poller()
 
         # Main dequeue-execute loop with exponential backoff on idle
         idle_backoff = 1  # seconds
@@ -365,12 +445,28 @@ class StandaloneWorker:
 
         while not self._shutdown.is_set():
             try:
+                # Operator IDLE → pause dequeue entirely (cheap sleep, heartbeat keeps registration alive)
+                if self._server_idle:
+                    log.debug("compute-config: server in IDLE — sleeping 30s")
+                    self._shutdown.wait(timeout=30)
+                    continue
+
+                # Apply server cap to throttle ceiling BEFORE asking for recommendation.
+                # The auto-tuner will still respect this on its next .tune() pass.
+                eff_max = self._effective_max_parallel()
+                if eff_max != self.throttle.max_parallel:
+                    log.info(
+                        "compute-config: clamping throttle.max_parallel %d -> %d (server cap=%s)",
+                        self.throttle.max_parallel, eff_max, self._server_compute_cap,
+                    )
+                    self.throttle.max_parallel = eff_max
+
                 # Check throttle — scale batch size with available capacity
                 recommended = self.throttle.recommended_workers()
                 batch_count = self.config.batch_size
-                if recommended < self.config.max_parallel:
+                if recommended < eff_max:
                     # Throttled — pull fewer jobs proportionally
-                    ratio = recommended / max(self.config.max_parallel, 1)
+                    ratio = recommended / max(eff_max, 1)
                     batch_count = max(1, int(self.config.batch_size * ratio))
 
                     # If heavily throttled (<25% capacity), add a cooldown
@@ -379,10 +475,19 @@ class StandaloneWorker:
                         if self._shutdown.is_set():
                             break
 
+                # Filter job_types by operator's allowed-jobs preference (LIGHT
+                # disables ml_train + walk_forward, etc.)
+                eff_job_types = self._effective_job_types()
+                if eff_job_types is not None and len(eff_job_types) == 0:
+                    # All job types blocked → behave like IDLE
+                    log.debug("compute-config: all job_types blocked — sleeping 30s")
+                    self._shutdown.wait(timeout=30)
+                    continue
+
                 # Dequeue a batch
                 jobs = self.client.dequeue(
                     count=batch_count,
-                    job_types=self.config.job_types or None,
+                    job_types=eff_job_types or None,
                 )
 
                 if not jobs:
@@ -423,8 +528,9 @@ class StandaloneWorker:
                     dequeue_seconds=0.0,  # measured in dequeue call
                 )
                 tuned = self.tuner.tune()
-                # Apply tuned max_parallel only — keep batch_size locked at startup value
-                self.throttle.max_parallel = tuned["max_parallel"]
+                # Apply tuned max_parallel BUT clamp by server cap so the
+                # operator's LIGHT/BALANCED/HEAVY pick is the hard ceiling.
+                self.throttle.max_parallel = self._effective_max_parallel(tuned["max_parallel"])
 
             except KeyboardInterrupt:
                 log.info("Worker interrupted.")
