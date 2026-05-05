@@ -71,6 +71,7 @@
           '/faq':                   ['FAQ', 'Common questions about autonomous trading, strategies, bots, risk controls, and pricing.'],
           '/blog':                  ['Blog', 'Insights on algorithmic trading, ML regime detection, strategy research, and platform updates.'],
           '/desktop':               ['Desktop App', 'Full-power trading workstation: local GPU backtesting, multi-monitor support, system tray, and Cmd+K command palette.'],
+          '/download':              ['Download Aura Alpha — Operator Setup Center', 'Download the desktop app for Windows, macOS, and Linux. Hardware tiers (Minimum / Recommended / Elite), optional GPU acceleration, and 5-step setup guide.'],
           '/mobile':                ['Mobile App', 'Monitor your trading desk from anywhere. Real-time bot telemetry, push notifications, and emergency kill switch.'],
           '/install':               ['Install Guide', 'Step-by-step guide to installing Aura Alpha Desktop on macOS, Windows, and Linux.'],
           '/demo':                  ['Live Demo', 'See Aura Alpha in action with live strategy signals, bot telemetry, and risk dashboards.'],
@@ -82,6 +83,20 @@
           '/compare/trade-ideas':   ['Aura Alpha vs Trade Ideas', 'Compare autonomous bots vs scanner alerts, backtesting depth, strategy count, and pricing.'],
           '/compare/trendspider':   ['Aura Alpha vs TrendSpider', 'ML-powered regime detection vs pattern recognition, autonomous execution vs alerts.'],
           '/compare/tradingview':   ['Aura Alpha vs TradingView', 'Autonomous trading bots vs charting platform, strategy engine vs Pine Script.'],
+          '/compare/auraalpha-vs-tradingview': ['Aura Alpha vs TradingView (2026) — Full Comparison', 'AI-discovered strategies + autonomous execution vs Pine Script charting + manual alerts. Side-by-side on charting, backtesting, broker integration, and global market coverage.'],
+          '/compare/auraalpha-vs-trendspider': ['Aura Alpha vs TrendSpider (2026) — Full Comparison', 'AI strategy discovery + autonomous execution vs automated chart pattern recognition + alerts. Comparing backtesting depth, regime detection, broker integration, and pricing.'],
+          '/compare/auraalpha-vs-trade-ideas': ['Aura Alpha vs Trade Ideas (2026) — Full Comparison', 'AI-discovered strategies with autonomous execution vs real-time AI scanner and stock idea generation. Compare signal coverage, strategy depth, and global market reach.'],
+          '/compare/auraalpha-vs-bookmap':         ['Aura Alpha vs Bookmap (2026)',          'AI strategy discovery + autonomous execution vs order-flow heatmap visualization. Different categories, often used together.'],
+          '/compare/auraalpha-vs-unusual-whales':  ['Aura Alpha vs Unusual Whales (2026)',   'Systematic strategy + execution platform vs options-flow + politician-trade alert service. Compare market coverage and execution.'],
+          '/compare/auraalpha-vs-benzinga-pro':    ['Aura Alpha vs Benzinga Pro (2026)',     'Systematic AI trading platform vs real-time news + audio squawk service. Honest framing of what each is built for.'],
+          '/compare/auraalpha-vs-koyfin':          ['Aura Alpha vs Koyfin (2026)',           'AI strategy + execution platform vs Bloomberg-style fundamental research terminal. Different categories.'],
+          '/compare/auraalpha-vs-stockcharts':     ['Aura Alpha vs StockCharts (2026)',      'AI strategy discovery + execution vs technical charting service. Compare strategy support and global coverage.'],
+          '/compare/auraalpha-vs-tc2000':          ['Aura Alpha vs TC2000 (2026)',           'AI strategy + multi-broker execution platform vs charting + scanning + integrated US brokerage bundle.'],
+          '/compare/best-ai-trading-platforms':    ['Best AI Trading Platforms (2026) — Honest Comparison',         'AI-driven trading platforms compared: strategy discovery, autonomous execution, broker integration, and global market coverage.'],
+          '/compare/best-trading-platforms':       ['Best Trading Platforms (2026) — Category Guide',               'Trading platforms compared across charting, automation, broker integration, and asset coverage. Honest framing.'],
+          '/compare/best-trading-scanners':        ['Best Trading Scanners (2026) — Real-Time + Systematic',        'Trading scanners compared: real-time signal coverage, custom criteria, AI ranking, and global market support.'],
+          '/compare/best-backtesting-platforms':   ['Best Backtesting Platforms (2026) — Walk-Forward Comparison',  'Backtesting platforms compared: walk-forward validation, code-first vs no-code, multi-asset, live-deployment paths.'],
+          '/compare/best-algorithmic-trading-software': ['Best Algorithmic Trading Software (2026)',                'Algo trading software compared: strategy discovery, autonomous execution, broker integration, walk-forward validation.'],
           '/compare/quantconnect':  ['Aura Alpha vs QuantConnect', 'Turnkey strategies vs build-from-scratch, autonomous bots vs LEAN engine.'],
           '/layla':                 ['AI Trading Bot | +34% Return', 'Autonomous bot trading 24 strategies across US, Crypto, Forex & ETFs. Watch live performance.'],
           '/terms':                 ['Terms of Service', 'Aura Alpha Holdings LLC terms of service for the autonomous trading platform.'],
@@ -90,59 +105,14 @@
           '/risk-disclosure':       ['Risk Disclosure', 'Important risk disclosures for algorithmic and autonomous trading.'],
           '/alpha-agreement':       ['Alpha Agreement', 'Aura Alpha early access agreement for alpha program participants.'],
           '/status':                ['Platform Status', 'Real-time health status of trading bots, API services, data pipeline, and execution infrastructure.'],
-
-          /* SEO landing pages */
-          '/ai-trading-platform':           ['AI Trading Platform', 'The AI trading platform that actually trades — ML regime detection, 83 backtested strategies, autonomous bots across 14 global markets. Free paper trading.'],
-          '/algorithmic-trading-software':  ['Algorithmic Trading Software', '83 backtested strategies, walk-forward validation, 47-broker execution, and 9-layer risk controls. Production-grade algo trading from $49/mo.'],
-          '/stock-trading-bot':             ['Stock Trading Bot', 'Autonomous stock trading bots running 83 strategies across 47 brokers. ML regime detection, 9-layer risk controls, one-tap kill switch.'],
-          '/trading-strategy-marketplace':  ['Trading Strategy Marketplace', 'Rent verified, backtested trading strategies from $9.99/mo. Walk-forward validated, live performance disclosed. Creators earn 70% revenue share.'],
-          '/best-trading-platform-2026':    ['Best Trading Platform 2026', 'Aura Alpha vs TradingView, QuantConnect, Trade Ideas, Trendspider, and 3Commas. ML-driven, audit-grade autonomous trading from $49/mo.'],
-
-          /* High-traffic public routes that previously fell back to homepage default */
-          '/results':                       ['Live Results & Track Record', 'Aggregated backtest performance over 490K trades plus live results with explicit sample-size disclosure.'],
-          '/track-record':                  ['Aura Alpha Track Record', 'Verified backtest and live trading performance, transparently disclosed.'],
-          '/strategies-public':             ['Strategy Catalogue', 'Browse 83 backtested strategies — momentum, mean reversion, breakout, options, crypto, short — ranked by Sharpe and drawdown.'],
-          '/strategy-marketplace':          ['Strategy Marketplace', 'Rent verified strategies from $9.99/mo. 70/30 revenue share for creators. No copy trading, no gurus.'],
-          '/strategy-leaderboard':          ['Live Strategy Leaderboard', 'Top performers by Sharpe ratio, win rate, and max drawdown across 14 regions — updated daily.'],
-          '/strategies/category/momentum':  ['Momentum Trading Strategies', 'Long-bias momentum systems tuned for trending regimes.'],
-          '/strategies/category/reversal':  ['Mean Reversion Trading Strategies', 'Counter-trend strategies that thrive in chop.'],
-          '/strategies/category/breakout':  ['Breakout Trading Strategies', 'Pattern-based breakout systems with volume confirmation.'],
-          '/strategies/category/options':   ['Options Trading Strategies', 'Defined-risk options structures with explicit Greeks management.'],
-          '/strategies/category/crypto':    ['Crypto Trading Strategies', '24/7 crypto strategies running through native Kraken and Coinbase APIs.'],
-          '/strategies/category/short':     ['Short Selling Strategies', 'Short-side systems with hard borrow checks and locate verification.'],
-          '/big-winners':                   ['Big Winners — Aura Alpha', 'Top-performing trades and strategies from across the platform.'],
-          '/aura-alpha-winners':            ['Aura Alpha Winners', 'Strategies and bots delivering the strongest live performance.'],
-          '/economy':                       ['Aura Alpha Strategy Economy', 'Creator economy with 70/30 revenue share and verified attribution.'],
-          '/tournaments':                   ['Trading Tournaments', 'Compete on simulated capital with real prizes — paper-trading tournaments live now.'],
-          '/leaderboard':                   ['Aura Alpha Leaderboard', 'Top traders, strategies, and creators across the platform.'],
-          '/leaderboard-live':              ['Live Strategy Leaderboard', 'Real-time strategy performance ranked across 14 markets.'],
-          '/live-leaderboard':              ['Live Trading Leaderboard', 'Real-time live performance leaderboard.'],
-          '/quant-desk':                    ['Quant Desk', 'Professional research desk: walk-forward, factor attribution, optimization, and execution analytics.'],
-          '/use-cases':                     ['Use Cases — Aura Alpha', 'How day traders, swing traders, systematic traders, and pro teams use Aura Alpha.'],
-          '/getting-started':               ['Getting Started', 'From signup to your first paper trade in ten minutes.'],
-          '/showcase':                      ['Strategies Showcase', 'Featured strategies with live and backtest performance side-by-side.'],
-          '/landing':                       ['Aura Alpha — Autonomous Trading', 'AI-powered autonomous trading platform with 83 strategies and 47 broker integrations.'],
-          '/fund-mode':                     ['Fund Mode — For Pro Teams', 'Multi-seat institutional plans with shared strategy libraries, team risk controls, and API access.'],
-          '/forex':                         ['FX Trading on Aura Alpha', 'Major and minor pairs through IBKR or MT5 bridge with regime-aware sizing.'],
-          '/futures':                       ['Futures Trading on Aura Alpha', 'Equity-index and energy futures with regime-aware exposure controls.'],
-          '/options':                       ['Options Trading on Aura Alpha', 'Multi-leg structures with explicit Greeks management and defined-risk gates.'],
-          '/paper-trading':                 ['Paper Trading on Aura Alpha', 'Simulate live strategies with real market data — no broker, no risk.'],
-          '/ira':                           ['IRA / Retirement Accounts', 'Connect compatible IRA brokers for tax-advantaged systematic trading.'],
-          '/politician-trades':             ['Politician Trade Tracker', 'Real-time STOCK Act filings — see what Congress is trading and follow specific members.'],
-          '/help':                          ['Help & Support', 'Knowledge base, troubleshooting guides, and direct support contact.'],
-          '/docs':                          ['Documentation', 'Product documentation: bots, strategies, risk engine, and integrations.'],
-          '/contact':                       ['Contact Aura Alpha', 'Reach the team for questions, support, partnerships, or media inquiries.'],
-          '/community':                     ['Aura Alpha Community', 'Join the Discord, follow updates, and connect with other systematic traders.'],
-          '/changelog':                     ['Changelog', 'Every shipped feature, fix, and improvement — listed chronologically.'],
-          '/release-notes':                 ['Release Notes', 'Detailed release notes by version.'],
-          '/referrals':                     ['Referrals — Both Get 2 Months Free', 'Refer a friend to Aura Alpha. You both get 2 free months of Pro.'],
-          '/brokers':                       ['Supported Brokers', '47 directly supported brokers, plus 127+ via the MetaTrader 5 bridge.'],
-          '/compare':                       ['Compare Aura Alpha', 'Side-by-side comparisons against TradingView, QuantConnect, Trade Ideas, Trendspider, 3Commas, and others.'],
-          '/compare/brokers':               ['Compare Brokers', 'How the 47 supported brokers compare for fees, asset classes, and execution quality.'],
-          '/compare/3commas':               ['Aura Alpha vs 3Commas', 'Multi-asset autonomous trading vs crypto-only bot relays.'],
-          '/compare/composer':              ['Aura Alpha vs Composer', 'ML-driven autonomous execution vs visual portfolio construction.'],
-          '/compare/robinhood':             ['Aura Alpha vs Robinhood', 'Systematic strategies with hard risk controls vs gamified retail brokerage.'],
-          '/login':                         ['Log In', 'Log in to your Aura Alpha account.']
+          '/strategies':            ['Trading Strategies — Aura Alpha', 'AI-discovered trading strategies across global equities, crypto, forex, and ETFs. Live ranking, walk-forward validated.'],
+          '/strategies/top-ranked': ['Top-Ranked Strategies — Aura Alpha', 'Highest-ranked strategies by profit factor, Sharpe ratio, and win rate. Backed by walk-forward backtesting on real historical data.'],
+          '/strategies/live':       ['Live Strategies — Aura Alpha', 'Strategies currently deployed across the live bot fleet. Real-time signal coverage across global markets.'],
+          '/strategies/discovered': ['Strategy Discovery Engine — Aura Alpha', 'Half a million+ strategy variants explored through our distributed research grid. Continuous discovery, ranking, and deployment.'],
+          '/performance':           ['Live Performance — Aura Alpha', 'Aggregate live and backtested performance for the Aura Alpha strategy fleet. Updated continuously.'],
+          '/markets':               ['Global Market Coverage — Aura Alpha', 'Equities, options, futures, forex, ETFs, and crypto across 34+ regions and 345+ unique market venues.'],
+          '/brokers':               ['Supported Brokers — Aura Alpha', '40+ brokers in the Aura Alpha integration layer including IBKR, Alpaca, Kraken, and 35+ with direct execution venues.'],
+          '/research':              ['Strategy Research Pipeline — Aura Alpha', 'How Aura Alpha discovers, evaluates, ranks, and deploys trading strategies — the full research-to-execution loop.']
         };
 
         var route = routes[path];
@@ -190,12 +160,6 @@
       "author": {
         "@type": "Organization",
         "name": "Aura Alpha"
-      },
-      "aggregateRating": {
-        "@type": "AggregateRating",
-        "ratingValue": "4.8",
-        "reviewCount": "5",
-        "bestRating": "5"
       }
     }
     </script>
@@ -215,54 +179,6 @@
         "email": "support@auraalpha.cc",
         "contactType": "customer service"
       }
-    }
-    </script>
-    <script type="application/ld+json">
-    {
-      "@context": "https://schema.org",
-      "@type": "FAQPage",
-      "mainEntity": [
-        {
-          "@type": "Question",
-          "name": "What is Aura Alpha?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Aura Alpha is an end-to-end autonomous trading platform that combines ML regime detection, 83 backtested strategies, a public strategy marketplace, 47 broker integrations across 14 global markets, and a 9-layer risk engine. It is built for traders who want institutional-grade systematic execution at retail pricing."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "How much does Aura Alpha cost?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Free Explorer tier with paper trading on live market data. Trader plan from $49/mo. Pro from $129/mo. Institutional from $499/mo. Individual strategy rentals from $9.99/mo without a full plan."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "Can Aura Alpha trade autonomously?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Yes. Bots run as background services and execute strategies automatically through direct broker APIs. The kill switch is one tap on a phone — nothing about Aura Alpha requires you to babysit a screen."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "Which brokers does Aura Alpha support?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "47 supported brokers via direct API including Interactive Brokers, Alpaca, Kraken, Coinbase, TradeStation, MOOMOO, eToro, and 40+ more. 127+ additional brokerages supported via the MetaTrader 5 bridge."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "Is the trading performance real?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Yes — and it is publicly disclosed at https://auraalpha.cc/results with backtest aggregates over 490K trades and live performance with explicit sample-size accounting. We pre-committed to republishing at n=100, n=500, and n=1000 live trades to prevent cherry-picking."
-          }
-        }
-      ]
     }
     </script>
     <script type="application/ld+json">
@@ -296,12 +212,102 @@
       }
     }
     </script>
-    <script type="module" crossorigin src="/assets/index-CtvhKjhM.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/vendor-CL9TIcsc.js">
-    <link rel="modulepreload" crossorigin href="/assets/i18n-D77-lTfE.js">
-    <link rel="modulepreload" crossorigin href="/assets/motion-P4m0MKnO.js">
-    <link rel="modulepreload" crossorigin href="/assets/radix-BX0blWs4.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-DUcwrZ_7.css">
+
+    <!-- Dataset schema — exposes the Aura Alpha strategy catalogue as a research dataset
+         so Google Dataset Search and Common Crawl-derived index pipelines can pick it up. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Dataset",
+      "name": "Aura Alpha Trading Strategy Catalogue",
+      "description": "Continuously updated catalogue of AI-discovered trading strategies, evaluated through walk-forward backtests across global equities, crypto, forex, and ETFs. Includes per-strategy win rate, profit factor, Sharpe ratio, drawdown, and live deployment status.",
+      "url": "https://auraalpha.cc/strategies",
+      "keywords": ["algorithmic trading", "trading strategies", "backtesting", "machine learning trading", "quantitative finance", "walk-forward analysis"],
+      "creator": { "@type": "Organization", "name": "AURA Holdings, LLC", "url": "https://auraalpha.cc" },
+      "license": "https://auraalpha.cc/terms",
+      "isAccessibleForFree": true,
+      "distribution": [
+        { "@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://auraalpha.cc/api/public/strategies/top" },
+        { "@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://auraalpha.cc/api/public/strategies/live" }
+      ]
+    }
+    </script>
+
+    <!-- FAQPage schema — high-leverage rich snippet eligible. Honest answers only. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "What is Aura Alpha?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Aura Alpha is an AI-driven trading platform that discovers, backtests, ranks, and deploys algorithmic trading strategies. It connects to multiple brokers including Interactive Brokers, Alpaca, and Kraken, and operates across global equities, crypto, forex, and ETFs."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How many strategies does Aura Alpha have?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "The platform's distributed research grid has evaluated more than half a million strategy variants. Of those, 83+ are catalogued and available for live deployment, with the leaderboard ranked by walk-forward profit factor, Sharpe ratio, and win rate."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Which brokers does Aura Alpha support?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "40+ brokers are included in the Aura Alpha integration layer, with 35+ wired for direct execution. Major supported brokers include Interactive Brokers, Alpaca, Kraken, Tradier, TradeStation, and CFD venues such as Saxo, IG, and Capital."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Which markets does Aura Alpha cover?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "34 executable regions are enabled, covering 345+ unique market venues across US, Canada, Europe (LSE, Xetra, Euronext, SIX, Borsa Italiana, BME, OSE, OMX, Warsaw, Prague, Vienna, Lisbon), Asia (TSE, HKEX, ASX, KRX, TWSE, SGX), emerging markets (BSE, B3), Middle East (Tadawul, TASE), Africa (JSE), forex, futures (CME), and crypto."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Is Aura Alpha safe?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Aura Alpha runs a 9-layer risk defense system: drawdown limits, daily loss limits, position-size caps, microcap filters, correlation monitoring, liquidity gates, and a kill switch. Bots run with a no-equity / no-heartbeat / no-approval lock so trades only fire when every safety check passes."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "How much does Aura Alpha cost?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Pricing tiers include Explorer (free, paper trading), Trader ($49/mo), Pro ($129/mo), and Institutional ($499/mo+). Strategy rentals and AI add-ons are available separately."
+          }
+        }
+      ]
+    }
+    </script>
+
+    <!-- BreadcrumbList — base shell. Per-page Helmet overrides this on internal pages. -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home",       "item": "https://auraalpha.cc/" },
+        { "@type": "ListItem", "position": 2, "name": "Strategies", "item": "https://auraalpha.cc/strategies" }
+      ]
+    }
+    </script>
+    <script type="module" crossorigin src="/assets/index-CZDQL9wI.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-D57z63HY.js">
+    <link rel="modulepreload" crossorigin href="/assets/i18n-EWgOHAM2.js">
+    <link rel="modulepreload" crossorigin href="/assets/motion-BdIz2bXo.js">
+    <link rel="modulepreload" crossorigin href="/assets/radix-D5O41Fh6.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-deabWOfT.css">
   </head>
   <body>
     <div id="root">
