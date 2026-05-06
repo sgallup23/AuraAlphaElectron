@@ -69,7 +69,10 @@ class StandaloneWorker:
         # GPU info (cached at startup)
         self._gpu_info: Dict[str, Any] = {"cpu_cores": config.cpu_count, "memory_gb": config.ram_gb}
         try:
-            from ..gpu_detect import detect_gpu
+            try:
+                from ..gpu_detect import detect_gpu
+            except (ImportError, ValueError):
+                from .gpu_detect import detect_gpu
             gpu_model, gpu_vram_gb, cuda_available = detect_gpu()
             self._gpu_info.update({
                 "gpu_model": gpu_model,
@@ -102,7 +105,10 @@ class StandaloneWorker:
         }
         # Detect GPU
         try:
-            from ..gpu_detect import detect_gpu
+            try:
+                from ..gpu_detect import detect_gpu
+            except (ImportError, ValueError):
+                from .gpu_detect import detect_gpu
             gpu_model, gpu_vram_gb, cuda_available = detect_gpu()
             caps["gpu_model"] = gpu_model
             caps["gpu_vram_gb"] = gpu_vram_gb
