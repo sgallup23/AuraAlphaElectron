@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld('auraDesktop', {
   clearAuthToken: () => ipcRenderer.invoke('clear-auth-token'),
   getAuthState: () => ipcRenderer.invoke('get-auth-state'),
 
+  // Boot autostart — user-toggleable. When ON, the app launches hidden
+  // (to tray) on system boot. The grid worker only spawns once the app
+  // is up, so there are no orphan workers when this is OFF.
+  getAutostart: () => ipcRenderer.invoke('autostart-get'),
+  setAutostart: (enabled) => ipcRenderer.invoke('autostart-set', enabled),
+
   platform: process.platform,
   version: require('./package.json').version,
 });
