@@ -250,8 +250,16 @@ function createWindow() {
   // Load via our custom protocol so absolute paths resolve correctly
   mainWindow.loadURL(`${SCHEME}://app/`);
 
+  // Detect "boot autostart" launch — when the OS boots Aura with
+  // --hidden (set by setLoginItemSettings) or macOS launches us hidden,
+  // skip showing the window. The tray + worker still come up so research
+  // runs in the background; the user can show the window from the tray.
+  const launchHidden =
+    process.argv.includes('--hidden') ||
+    (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAsHidden);
+
   mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
+    if (!launchHidden) mainWindow.show();
   });
 
   // Save state on move/resize
@@ -453,6 +461,36 @@ function registerIPC() {
 
   ipcMain.handle('network-test-url', (_, url) => networkConfig.testCustomUrl(url));
 
+  // ── Boot autostart (Windows/macOS) ─────────────────────────────────
+  // Controls whether Aura Alpha auto-launches on system boot. When
+  // enabled, the app starts hidden (tray-only) so it doesn't grab focus
+  // on login. The grid worker auto-starts 3s after window-ready as long
+  // as a token is present (see auto-start block ~line 567). Closing the
+  // app stops the worker — no orphans.
+  ipcMain.handle('autostart-get', () => {
+    try {
+      const s = app.getLoginItemSettings();
+      return { ok: true, openAtLogin: !!s.openAtLogin, openAsHidden: !!s.openAsHidden };
+    } catch (err) {
+      return { ok: false, error: err.message, openAtLogin: false };
+    }
+  });
+
+  ipcMain.handle('autostart-set', (_, enabled) => {
+    try {
+      const want = !!enabled;
+      app.setLoginItemSettings({
+        openAtLogin: want,
+        openAsHidden: want,        // macOS hint
+        args: want ? ['--hidden'] : [],  // Windows: start minimized to tray
+      });
+      return { ok: true, openAtLogin: want };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
+
+
   ipcMain.handle('network-resolve', async () => {
     const resolved = await networkConfig.resolveServerUrl();
     if (resolved.url) {
@@ -559,6 +597,49 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   initUpdater();
+
+  // ── First-launch orphan cleanup ────────────────────────────────────
+  // Honors the "Electron app owns the worker lifecycle" rule. On first
+  // launch (or after an upgrade that bumps the cleanup version), run
+  // scripts/cleanup_orphan_autostarts.sh to disable any systemd-user
+  // services or cron entries left behind by older fleet-start scripts
+  // that respawn bots/workers without the app being open. Idempotent;
+  // skipped silently if the script isn't present (eg packaged on macOS
+  // with no bash). Linux/WSL only.
+  try {
+    const CLEANUP_VERSION = '1';   // bump to re-run after script changes
+    const flagPath = path.join(userDataPath, 'orphan-cleanup-applied.json');
+    let applied = null;
+    try { applied = JSON.parse(fs.readFileSync(flagPath, 'utf8')); } catch (_) {}
+    if (process.platform === 'linux' && (!applied || applied.version !== CLEANUP_VERSION)) {
+      const scriptPath = path.join(__dirname, 'scripts', 'cleanup_orphan_autostarts.sh');
+      if (fs.existsSync(scriptPath)) {
+        const { spawn } = require('child_process');
+        const proc = spawn('bash', [scriptPath, '--apply'], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: false,
+        });
+        proc.stdout.on('data', (d) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('worker-log', `[orphan-cleanup] ${d.toString().trim()}`);
+          }
+        });
+        proc.on('exit', (code) => {
+          if (code === 0) {
+            try {
+              fs.writeFileSync(flagPath, JSON.stringify({
+                version: CLEANUP_VERSION,
+                applied_at: new Date().toISOString(),
+              }, null, 2));
+            } catch (_) {}
+          }
+        });
+      }
+    }
+  } catch (err) {
+    console.error('[orphan-cleanup] non-fatal:', err.message);
+  }
+
 
   // Auto-start the grid worker once API_BASE is resolved AND we have a
   // contributor token. No token = the user hasn't signed in yet; we
