@@ -155,19 +155,51 @@ protocol.registerSchemesAsPrivileged([{
 }]);
 
 function setupProtocol() {
-  protocol.handle(SCHEME, (request) => {
+  protocol.handle(SCHEME, async (request) => {
     const url = new URL(request.url);
     const urlPath = decodeURIComponent(url.pathname);
 
-    // Proxy /api/* requests to the production server
+    // Proxy /api/* requests to the production server. Renderer fetches
+    // origin = aura://app, so cookies set on auraalpha.cc don't auto-attach.
+    // Forward them explicitly + the stored bearer so authed endpoints work
+    // whether API_BASE is primary, backup, or Tailscale IP.
     if (urlPath.startsWith('/api/')) {
       const proxyUrl = `${API_BASE}${urlPath}${url.search}`;
-      return net.fetch(proxyUrl, {
+      const headers = new Headers(request.headers);
+      try {
+        const cks = await session.defaultSession.cookies.get({ url: 'https://auraalpha.cc' });
+        if (cks && cks.length > 0) {
+          headers.set('Cookie', cks.map(c => `${c.name}=${c.value}`).join('; '));
+        }
+      } catch (_) { /* cookie store unavailable */ }
+      if (currentToken && !headers.has('Authorization')) {
+        headers.set('Authorization', `Bearer ${currentToken}`);
+      }
+      const response = await net.fetch(proxyUrl, {
         method: request.method,
-        headers: request.headers,
+        headers,
         body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
         duplex: request.method !== 'GET' && request.method !== 'HEAD' ? 'half' : undefined,
       });
+      // If refresh itself comes back 401, the stored session is dead. Wipe
+      // local auth state + auraalpha.cc cookies and reload the SPA so it
+      // re-enters the login flow instead of getting stuck on a loading screen.
+      if (response.status === 401 && /\/api\/auth\/refresh\b/.test(urlPath)) {
+        try { fs.unlinkSync(authFile); } catch (_) {}
+        currentToken = null;
+        try {
+          const stale = await session.defaultSession.cookies.get({ url: 'https://auraalpha.cc' });
+          for (const c of stale || []) {
+            await session.defaultSession.cookies
+              .remove(`https://${c.domain.replace(/^\./, '')}${c.path || '/'}`, c.name)
+              .catch(() => {});
+          }
+        } catch (_) {}
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          setTimeout(() => mainWindow.webContents.reload(), 250);
+        }
+      }
+      return response;
     }
 
     // Serve static files from dist/
