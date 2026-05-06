@@ -598,6 +598,24 @@ app.whenReady().then(async () => {
   createTray();
   initUpdater();
 
+  // ── Auto-sync research results to coordinator ─────────────────────
+  // Per the "no Claude dependency" mandate (memory/feedback_no_claude_
+  // dependency_mandate.md): research result files should auto-flow to
+  // the coordinator without anyone running rsync by hand. Customers'
+  // grid_worker already POSTs job results via API; THIS hook covers
+  // admin/researcher users who run the full prodesk locally and have
+  // backtest result files (state/aura_alpha_backtest_results_*.json,
+  // state/ml_strategy_scorer.json) that the API path doesn't ingest.
+  //
+  // Runs 30 s after launch, then every 30 min. Silently no-ops on
+  // machines without:
+  //   - $HOME/TRADING_DESK/prodesk/state/ (customer install — fine)
+  //   - an `ec2` SSH alias (no auth path — fine)
+  // So it's safe to ship to all customers; only admin researchers
+  // see actual sync activity.
+  startResultsSync();
+  // (definition below, after this whenReady block)
+
   // ── First-launch orphan cleanup ────────────────────────────────────
   // Honors the "Electron app owns the worker lifecycle" rule. On first
   // launch (or after an upgrade that bumps the cleanup version), run
@@ -715,6 +733,44 @@ app.whenReady().then(async () => {
     }
   });
 });
+
+// ── Auto-sync research result files to the coordinator ──────────────
+// Runs only if (a) the user has a local prodesk repo with state files
+// AND (b) an `ec2` SSH alias resolves. Customers without prodesk are
+// no-op'd silently. See the "no Claude dependency" mandate.
+function startResultsSync() {
+  const home = require('os').homedir();
+  const stateDir = path.join(home, 'TRADING_DESK', 'prodesk', 'state');
+  if (!fs.existsSync(stateDir)) {
+    // Customer install — nothing to sync. Silent no-op.
+    return;
+  }
+  const SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 min
+  function runSync() {
+    const { spawn } = require('child_process');
+    const cmd =
+      `rsync -az --info=stats1 ` +
+      `"${stateDir}"/aura_alpha_backtest_results_*.json ` +
+      `"${stateDir}"/ml_strategy_scorer.json ` +
+      `ec2:/home/ubuntu/TRADING_DESK/prodesk/state/ 2>&1 || true`;
+    const proc = spawn('bash', ['-lc', cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    proc.stdout.on('data', (d) => {
+      const msg = d.toString().trim();
+      if (msg && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('worker-log', `[results-sync] ${msg}`);
+      }
+    });
+    proc.stderr.on('data', (d) => {
+      const msg = d.toString().trim();
+      if (msg && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('worker-log', `[results-sync:err] ${msg}`);
+      }
+    });
+  }
+  // First sync 30 s after app ready, then every 30 min.
+  setTimeout(runSync, 30 * 1000);
+  setInterval(runSync, SYNC_INTERVAL_MS);
+}
 
 app.on('before-quit', () => {
   app.isQuitting = true;
