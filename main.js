@@ -181,10 +181,17 @@ function setupProtocol() {
         body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
         duplex: request.method !== 'GET' && request.method !== 'HEAD' ? 'half' : undefined,
       });
-      // If refresh itself comes back 401, the stored session is dead. Wipe
-      // local auth state + auraalpha.cc cookies and reload the SPA so it
-      // re-enters the login flow instead of getting stuck on a loading screen.
-      if (response.status === 401 && /\/api\/auth\/refresh\b/.test(urlPath)) {
+      // Trigger auth recovery on 401 from /api/auth/refresh (the original
+      // case) AND on 401 from any other authed endpoint that we attached a
+      // Bearer token to. Without this, an API restart that revokes sessions
+      // leaves the SPA stuck on stale tokens — every status endpoint returns
+      // 401, gridStatus stays null, and the cluster badge silently shows
+      // "offline" even though the backend is healthy. Skip /api/auth/login
+      // so a wrong-password attempt doesn't trigger an infinite reload.
+      const wasAttemptedAuth = headers.has('Authorization');
+      const isLoginAttempt = /\/api\/auth\/login\b/.test(urlPath);
+      const isRefreshAttempt = /\/api\/auth\/refresh\b/.test(urlPath);
+      if (response.status === 401 && !isLoginAttempt && (isRefreshAttempt || wasAttemptedAuth)) {
         try { fs.unlinkSync(authFile); } catch (_) {}
         currentToken = null;
         try {
