@@ -18,9 +18,13 @@ const PRIMARY_URL = 'https://auraalpha.cc';
 // route around ISP-level filtering of auraalpha.cc without any user config.
 // Only resolves when the local machine is on the tailnet, so it's harmless
 // for users who aren't.
+// 2026-05-06: Removed `auraalpha.app` and `aura-trading.com` — both have been
+// squatted by unrelated sites that return HTTP 200 on /api/health, which fooled
+// the loose probe into accepting them. Resolved server then served HTML to
+// every API call and the SPA showed "Connection failed". probeUrl below now
+// also requires a JSON body containing `"status"` so a squatter's HTML 200
+// can't pass the check anyway.
 const BACKUP_URLS = [
-  'https://auraalpha.app',
-  'https://aura-trading.com',
   // Raw tailnet IP — preferred over the FQDN below because Cloudflare WARP's
   // local resolver (127.0.2.2) hijacks DNS on Windows and refuses to resolve
   // *.tail62e000.ts.net, even with `tailscale dns status` saying enabled.
@@ -175,12 +179,32 @@ function probeViaElectronNet(url, timeoutMs) {
           return finish({ ok: false, errorClass: 'http_redirect', error: `redirected to filter: ${loc}`, via: 'electron' });
         }
       }
-      resp.on('data', () => { /* discard */ });
+      // Capture body so we can verify it's an actual API health response —
+      // a squatter that returns HTML 200 on /api/health used to fool the
+      // probe and break the SPA. Cap the buffer at 4KB so we don't read MB
+      // of HTML on a malicious server.
+      const chunks = [];
+      let bufLen = 0;
+      const MAX_BODY = 4096;
+      resp.on('data', (chunk) => {
+        if (bufLen < MAX_BODY) {
+          chunks.push(chunk);
+          bufLen += chunk.length;
+        }
+      });
       resp.on('end', () => {
-        if (resp.statusCode >= 200 && resp.statusCode < 500) {
+        if (resp.statusCode < 200 || resp.statusCode >= 500) {
+          return finish({ ok: false, errorClass: 'http_error', error: `HTTP ${resp.statusCode}`, via: 'electron' });
+        }
+        const ct = (resp.headers['content-type'] || resp.headers['Content-Type'] || '').toString().toLowerCase();
+        const body = Buffer.concat(chunks).toString('utf8', 0, MAX_BODY);
+        // Real API health response is JSON containing "status":"ok" and "api_version".
+        // A squatter site serves HTML or unrelated JSON.
+        const looksLikeHealth = /application\/json/.test(ct) && /"api_version"/.test(body) && /"status"\s*:\s*"ok"/.test(body);
+        if (looksLikeHealth) {
           finish({ ok: true, status: resp.statusCode, via: 'electron' });
         } else {
-          finish({ ok: false, errorClass: 'http_error', error: `HTTP ${resp.statusCode}`, via: 'electron' });
+          finish({ ok: false, errorClass: 'wrong_server', error: `not an Aura API (ct=${ct.slice(0, 40)})`, via: 'electron' });
         }
       });
     });
