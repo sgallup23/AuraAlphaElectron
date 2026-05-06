@@ -467,6 +467,20 @@ function registerIPC() {
     if (!t) return { ok: false, error: 'Empty token' };
     currentToken = t;
     persistToken(t);
+    // Auto-start the grid worker now that we have a token. The launch-time
+    // auto-start runs 3s after app start, before the user has signed in,
+    // so without this hook the worker never spawns until the user manually
+    // clicks ACTIONS -> Start.
+    try {
+      const status = getWorkerStatus();
+      if (!status.running && API_BASE && API_SOURCE !== 'none') {
+        startWorker('max', (msg) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('worker-log', msg);
+          }
+        }, API_BASE, currentToken);
+      }
+    } catch (_) { /* startWorker errors surface via worker-log */ }
     return { ok: true };
   });
 
