@@ -191,19 +191,36 @@ function setupProtocol() {
       const wasAttemptedAuth = headers.has('Authorization');
       const isLoginAttempt = /\/api\/auth\/login\b/.test(urlPath);
       const isRefreshAttempt = /\/api\/auth\/refresh\b/.test(urlPath);
+      // Throttle recovery to once per 30s — without this guard the SPA's
+      // localStorage tokens get re-attached to every retry after reload,
+      // and we end up in a flicker loop (reload→401→reload→401…).
+      const now = Date.now();
+      const RECOVER_COOLDOWN_MS = 30000;
       if (response.status === 401 && !isLoginAttempt && (isRefreshAttempt || wasAttemptedAuth)) {
-        try { fs.unlinkSync(authFile); } catch (_) {}
-        currentToken = null;
-        try {
-          const stale = await session.defaultSession.cookies.get({ url: 'https://auraalpha.cc' });
-          for (const c of stale || []) {
-            await session.defaultSession.cookies
-              .remove(`https://${c.domain.replace(/^\./, '')}${c.path || '/'}`, c.name)
-              .catch(() => {});
+        if (now - (global.__lastAuthRecoverTs || 0) > RECOVER_COOLDOWN_MS) {
+          global.__lastAuthRecoverTs = now;
+          try { fs.unlinkSync(authFile); } catch (_) {}
+          currentToken = null;
+          try {
+            const stale = await session.defaultSession.cookies.get({ url: 'https://auraalpha.cc' });
+            for (const c of stale || []) {
+              await session.defaultSession.cookies
+                .remove(`https://${c.domain.replace(/^\./, '')}${c.path || '/'}`, c.name)
+                .catch(() => {});
+            }
+          } catch (_) {}
+          // Wipe renderer localStorage too — the SPA persists aura_token /
+          // aura_refresh_token there. If we don't clear, reload re-attaches
+          // the same stale token to the next request and we loop.
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            try {
+              await mainWindow.webContents.executeJavaScript(
+                `try{localStorage.removeItem('aura_token');localStorage.removeItem('aura_refresh_token');localStorage.removeItem('aura_user');localStorage.removeItem('aura_login_ts');}catch(_){};`,
+                true,
+              );
+            } catch (_) { /* renderer may be navigating */ }
+            setTimeout(() => mainWindow.webContents.reload(), 250);
           }
-        } catch (_) {}
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          setTimeout(() => mainWindow.webContents.reload(), 250);
         }
       }
       return response;
