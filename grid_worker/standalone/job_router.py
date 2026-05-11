@@ -38,8 +38,13 @@ _candidates = []
 _env_override = _os.environ.get("AURA_PRODESK_PATH")
 if _env_override:
     _candidates.append(Path(_env_override))
+_candidates.append(Path.home() / "TRADING_DESK" / "prodesk")
+# Windows-native canonical path (post-WSL-sunset on Trading_Laptop, 2026-05-10).
+# Workers launched outside a user shell (Electron, scheduled tasks) may not
+# have HOME pointing where the repo lives, so probe the canonical drive path.
+if sys.platform == "win32":
+    _candidates.append(Path("C:/TRADING_DESK/prodesk"))
 _candidates.extend([
-    Path.home() / "TRADING_DESK" / "prodesk",
     Path.home() / "prodesk",
     Path(__file__).resolve().parent.parent.parent,
 ])
