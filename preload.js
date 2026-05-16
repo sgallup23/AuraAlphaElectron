@@ -15,12 +15,14 @@ contextBridge.exposeInMainWorld('auraDesktop', {
   resolveServer: () => ipcRenderer.invoke('network-resolve'),
   onOpenNetworkSettings: (cb) => ipcRenderer.on('open-network-settings', () => cb()),
 
-  // Auth token — renderer pushes the signed-in user's token after login
-  // so the grid worker can register with the coordinator. Cleared on
-  // sign-out. Stored encrypted on disk via Electron safeStorage.
-  setAuthToken: (token) => ipcRenderer.invoke('set-auth-token', token),
+  // Auth tokens — renderer pushes BOTH the access and (optional) refresh
+  // tokens after login so they survive an Electron restart. Without
+  // refresh-token persistence, every Electron relaunch forced a full
+  // re-login because the renderer-side localStorage entry was gone.
+  setAuthToken: (token, refreshToken) => ipcRenderer.invoke('set-auth-token', token, refreshToken),
   clearAuthToken: () => ipcRenderer.invoke('clear-auth-token'),
   getAuthState: () => ipcRenderer.invoke('get-auth-state'),
+  getStoredAuth: () => ipcRenderer.invoke('get-stored-auth'),
 
   // Boot autostart — user-toggleable. When ON, the app launches hidden
   // (to tray) on system boot. The grid worker only spawns once the app

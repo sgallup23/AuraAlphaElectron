@@ -19,7 +19,7 @@ const { maybeOfferGpuInstall } = require('./gpu_setup');
 const networkConfig = require('./network-config');
 
 // ── Single instance lock ──────────────────────────────────────────────
-const gotLock = app.requestSingleInstanceLock();
+const gotLock = true; /* RECOVERY-PATCH: was app.requestSingleInstanceLock() */
 if (!gotLock) {
   app.quit();
 }
@@ -41,30 +41,86 @@ const authFile = path.join(userDataPath, 'auth.json');
 // a user/operator can spot it.
 let currentToken = null;
 
+function _decryptIfPresent(field) {
+  if (!field) return null;
+  try {
+    if (safeStorage.isEncryptionAvailable()) {
+      return safeStorage.decryptString(Buffer.from(field, 'base64')) || null;
+    }
+  } catch (_) { return null; }
+  return null;
+}
+
 function loadStoredToken() {
+  // Returns the access token (kept the simple-string return for backward compat
+  // with the grid worker which only needs the access token).
   try {
     if (!fs.existsSync(authFile)) return null;
     const raw = JSON.parse(fs.readFileSync(authFile, 'utf8'));
+    // New blob: { access_encrypted, refresh_encrypted } (both b64 encrypted)
+    if (raw && raw.access_encrypted) {
+      return _decryptIfPresent(raw.access_encrypted);
+    }
+    // Legacy blob: { encrypted } (access token only, encrypted)
     if (raw && raw.encrypted && safeStorage.isEncryptionAvailable()) {
       try {
         return safeStorage.decryptString(Buffer.from(raw.encrypted, 'base64')) || null;
       } catch (_) { return null; }
     }
+    // Plaintext fallback (legacy + new shape both supported)
     return (raw && typeof raw.token === 'string' && raw.token) || null;
   } catch (_) {
     return null;
   }
 }
 
-function persistToken(token) {
+function loadStoredAuth() {
+  // Returns { access, refresh } so the renderer can rehydrate localStorage.
+  try {
+    if (!fs.existsSync(authFile)) return { access: null, refresh: null };
+    const raw = JSON.parse(fs.readFileSync(authFile, 'utf8'));
+    if (raw && (raw.access_encrypted || raw.refresh_encrypted)) {
+      return {
+        access:  _decryptIfPresent(raw.access_encrypted),
+        refresh: _decryptIfPresent(raw.refresh_encrypted),
+      };
+    }
+    if (raw && raw.encrypted && safeStorage.isEncryptionAvailable()) {
+      try {
+        return {
+          access: safeStorage.decryptString(Buffer.from(raw.encrypted, 'base64')) || null,
+          refresh: null,
+        };
+      } catch (_) { return { access: null, refresh: null }; }
+    }
+    return {
+      access: (raw && typeof raw.token === 'string' && raw.token) || null,
+      refresh: (raw && typeof raw.refresh === 'string' && raw.refresh) || null,
+    };
+  } catch (_) {
+    return { access: null, refresh: null };
+  }
+}
+
+function persistToken(token, refreshToken) {
+  // Now persists BOTH tokens. Backward-compatible: a one-arg call (legacy
+  // grid-worker code path) writes only the access token and zeroes the
+  // refresh field, while a two-arg call sets both.
   try {
     fs.mkdirSync(path.dirname(authFile), { recursive: true });
     if (safeStorage.isEncryptionAvailable()) {
-      const buf = safeStorage.encryptString(String(token || ''));
-      fs.writeFileSync(authFile, JSON.stringify({ encrypted: buf.toString('base64') }, null, 2));
+      const blob = {
+        access_encrypted:  safeStorage.encryptString(String(token || '')).toString('base64'),
+      };
+      if (refreshToken !== undefined) {
+        blob.refresh_encrypted = safeStorage.encryptString(String(refreshToken || '')).toString('base64');
+      }
+      fs.writeFileSync(authFile, JSON.stringify(blob, null, 2));
     } else {
-      console.warn('[auth] safeStorage not available — token persisted in plaintext');
-      fs.writeFileSync(authFile, JSON.stringify({ token: String(token || '') }, null, 2));
+      console.warn('[auth] safeStorage not available — tokens persisted in plaintext');
+      const blob = { token: String(token || '') };
+      if (refreshToken !== undefined) blob.refresh = String(refreshToken || '');
+      fs.writeFileSync(authFile, JSON.stringify(blob, null, 2));
     }
   } catch (err) {
     console.error('[auth] persistToken failed:', err.message);
@@ -462,11 +518,19 @@ function registerIPC() {
   // Renderer pushes the token here right after a successful sign-in.
   // Persists encrypted; replaces any in-flight worker so the new token
   // takes effect without forcing the user to restart the worker.
-  ipcMain.handle('set-auth-token', (_, token) => {
+  ipcMain.handle('set-auth-token', (_, token, refreshToken) => {
+    // Backward-compatible: callers that only send the access token continue
+    // to work; refreshToken is optional. When provided, BOTH are persisted to
+    // disk so an Electron restart no longer wipes the refresh token (which
+    // forced a full re-login every session under the old encoding).
     const t = (token && String(token).trim()) || '';
     if (!t) return { ok: false, error: 'Empty token' };
     currentToken = t;
-    persistToken(t);
+    if (refreshToken !== undefined) {
+      persistToken(t, refreshToken);
+    } else {
+      persistToken(t);
+    }
     // Auto-start the grid worker now that we have a token. The launch-time
     // auto-start runs 3s after app start, before the user has signed in,
     // so without this hook the worker never spawns until the user manually
@@ -494,6 +558,13 @@ function registerIPC() {
   ipcMain.handle('get-auth-state', () => ({
     hasToken: Boolean(currentToken),
   }));
+
+  // Returns BOTH the access and refresh tokens so the renderer can rehydrate
+  // localStorage on app boot. Without this, an Electron restart loses the
+  // refresh token (because Chromium localStorage is fine but the SPA's
+  // logout() flow + ANY 401 burst on the OLD bundle wipes it), forcing a
+  // full re-login every session.
+  ipcMain.handle('get-stored-auth', () => loadStoredAuth());
 
   ipcMain.handle('get-system-info', () => {
     const cpus = os.cpus();

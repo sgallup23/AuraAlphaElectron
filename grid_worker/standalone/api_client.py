@@ -83,16 +83,18 @@ class CoordinatorClient:
         params: Optional[Dict] = None,
         stream: bool = False,
         timeout: Optional[tuple] = None,
+        max_retries: Optional[int] = None,
     ) -> requests.Response:
         """Make an HTTP request with retry logic and exponential backoff."""
         url = self._url(path)
         last_exc: Optional[Exception] = None
+        effective_max = max_retries if (max_retries is not None and max_retries > 0) else MAX_RETRIES
 
         # Strip NaN/Inf so requests' allow_nan=False JSON encoder doesn't drop
         # the call. Done once per _request rather than per retry.
         json_safe = _sanitize_for_json(json) if json is not None else None
 
-        for attempt in range(MAX_RETRIES):
+        for attempt in range(effective_max):
             try:
                 resp = self.session.request(
                     method=method,
@@ -123,16 +125,16 @@ class CoordinatorClient:
                 last_exc = e
 
             # Exponential backoff
-            if attempt < MAX_RETRIES - 1:
+            if attempt < effective_max - 1:
                 wait = BACKOFF_BASE * (2 ** attempt)
                 log.warning(
                     "Request %s %s failed (attempt %d/%d), retrying in %ds: %s",
-                    method, path, attempt + 1, MAX_RETRIES, wait, last_exc,
+                    method, path, attempt + 1, effective_max, wait, last_exc,
                 )
                 time.sleep(wait)
 
         raise ConnectionError(
-            f"Failed after {MAX_RETRIES} retries: {method} {path} — {last_exc}"
+            f"Failed after {effective_max} retries: {method} {path} — {last_exc}"
         )
 
     # ── Public API methods ─────────────────────────────────────────────
@@ -234,7 +236,14 @@ class CoordinatorClient:
             payload["throughput_jpm"] = throughput_jpm
         if supported_job_types is not None:
             payload["supported_job_types"] = list(supported_job_types)
-        resp = self._request("POST", "heartbeat", json=payload)
+        # Heartbeat-specific tight timeout + minimal retries: a heartbeat that
+        # fails should fail FAST so the next interval-tick can attempt fresh,
+        # not block this thread for ~105s (5×15s read + 62s backoff). Coordinator's
+        # HB_STALE_SECS=30 means stretching a single failure across multiple
+        # intervals leaves the worker marked offline 75-95% of the time during
+        # API-side slow windows. Verified 2026-05-10: 2+ workers stuck offline
+        # despite the python sidecar process being alive.
+        resp = self._request("POST", "heartbeat", json=payload, timeout=(5, 5), max_retries=2)
         return resp.json()
 
     def download_data(self, region: str, symbol: str, dest_path: Path) -> bool:

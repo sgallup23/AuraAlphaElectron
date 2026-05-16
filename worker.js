@@ -142,13 +142,17 @@ function parseOutput(data) {
 const MODE_FLAGS = {
   dev:    { parallel: 4,  batch: 4,  jobTypes: 'research_backtest,backtest,signal_gen' },
   hybrid: { parallel: 8,  batch: 8,  jobTypes: 'optimization,research_backtest,signal_gen,alpha_factory,ohlcv_refresh,backtest' },
-  // 2026-05-06: max no longer claims ml_train or walk_forward — both currently
-  // hit "insufficient data" in train_strategy_model_v2 because
-  // ml_features_v2_union.parquet only joins 5-17% of labels. Workers were
-  // tying up 13+ leases doing nothing, so the UI's Contribution / CPU / GPU
-  // throughput showed 0%. Restore those job types here once the parquet
-  // writer is repaired (see incident_strategy_filter_nan_bypass_2026_05_06).
-  max:    { parallel: 14, batch: 12, jobTypes: 'research_backtest,signal_gen,optimization,alpha_factory,ohlcv_refresh,backtest' },
+  // 2026-05-06: max ONLY claims research_backtest. The bundled standalone
+  // job_router can only execute research_backtest with on-disk modules
+  // (backtest_engine.py is bundled). Every other job type — signal_gen,
+  // optimization, alpha_factory, ohlcv_refresh, ml_train, walk_forward —
+  // requires BASE = path to the prodesk repo, which doesn't exist on
+  // customer machines, and fails with "Project base not found". Failed
+  // claims don't tick jobs_completed visibly, so the UI shows 0 throughput
+  // even while workers were claiming 36 jobs/cycle. research_backtest is
+  // what feeds harvest_grid_results -> promotion -> rentable strategy
+  // catalog, which is the actual customer product anyway.
+  max:    { parallel: 14, batch: 12, jobTypes: 'research_backtest' },
 };
 
 // ── Start worker ──────────────────────────────────────────────────────
