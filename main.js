@@ -14,6 +14,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { initUpdater } = require('./updater');
+const { autoUpdater } = require('electron-updater');
+const { initElectronUpdateWS, getDeviceId: getUpdateDeviceId, getPendingUpdate } = require('./ws_client_update');
 const { startWorker, stopWorker, getStatus: getWorkerStatus, findPython } = require('./worker');
 const { maybeOfferGpuInstall } = require('./gpu_setup');
 const networkConfig = require('./network-config');
@@ -196,6 +198,26 @@ function getMime(filePath) {
 // ── Globals ───────────────────────────────────────────────────────────
 let mainWindow = null;
 let tray = null;
+
+// ── Auto-update pending-state + snooze ────────────────────────────────
+// Module-level state for the cloud-coordinated update banner. The
+// ws_client_update module owns the actual WS + autoUpdater hookup, and
+// calls back into main.js via:
+//   - global.__auraGetApiBase()          — gives the WS client our live API_BASE
+//   - global.__auraOnUpdatePending(info) — fired when an update is downloaded
+//
+// Snooze is per-process: a snooze suppresses RE-BROADCASTING the
+// update-downloaded IPC for N hours (but the original IPC fires once
+// when the download completes, and the menu/tray hint stays visible).
+// Snooze does NOT delay the download itself — that's already done in
+// the background by autoUpdater. Snooze is purely a renderer-banner
+// suppression knob.
+let pendingUpdateInfo = null;          // {version, downloaded_at, release_notes} | null
+let snoozeUntilTs = 0;                 // epoch ms; banner re-broadcast suppressed until this
+const updateMenuItemId = 'restart-to-apply-update';
+const defaultTrayTooltip = () => `Aura Alpha v${app.getVersion()}`;
+const pendingTrayTooltip = (v) => `Aura Alpha (update v${v} pending — restart to apply)`;
+// ────────────────────────────────────────────────────────────────────
 
 // ── Custom protocol: serves dist/ files and proxies /api/* ───────────
 // Register the scheme as privileged before app is ready
@@ -416,25 +438,37 @@ function setupCorsBypass() {
 }
 
 // ── System tray ──────────────────────────────────────────────────────
-function createTray() {
-  const iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
-  let icon;
-  if (fs.existsSync(iconPath)) {
-    icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
-  } else {
-    icon = nativeImage.createEmpty();
-  }
-
-  tray = new Tray(icon);
+function buildTrayMenu() {
   const appVersion = app.getVersion();
-  tray.setToolTip(`Aura Alpha v${appVersion}`);
-
-  const contextMenu = Menu.buildFromTemplate([
+  const items = [
     {
       label: `Aura Alpha v${appVersion}`,
       enabled: false,
     },
     { type: 'separator' },
+    // "Restart to apply update (vX.Y.Z)" — only visible when an update
+    // has been downloaded. Clicking calls quitAndInstall — the only
+    // place in the entire app that's allowed to restart (other than the
+    // banner's Restart button via IPC). Per the banner-only UX rule,
+    // NEVER restart without an explicit user click here or in the banner.
+    {
+      id: updateMenuItemId,
+      label: pendingUpdateInfo
+        ? `Restart to apply update (v${pendingUpdateInfo.version})`
+        : 'Restart to apply update',
+      visible: Boolean(pendingUpdateInfo),
+      click: () => {
+        try {
+          app.isQuitting = true;
+          stopWorker();
+          // quitAndInstall(isSilent=false, isForceRunAfter=true) → user
+          // sees the installer and the app relaunches after install.
+          autoUpdater.quitAndInstall(false, true);
+        } catch (e) {
+          console.error('[updater] tray quitAndInstall failed:', e.message);
+        }
+      },
+    },
     {
       label: 'Show',
       click: () => {
@@ -489,15 +523,52 @@ function createTray() {
         app.quit();
       },
     },
-  ]);
+  ];
+  return Menu.buildFromTemplate(items);
+}
 
-  tray.setContextMenu(contextMenu);
-  tray.on('double-click', () => {
-    if (mainWindow) {
-      mainWindow.show();
-      mainWindow.focus();
+function refreshTrayForUpdateState() {
+  if (!tray || tray.isDestroyed?.()) return;
+  try {
+    tray.setToolTip(
+      pendingUpdateInfo
+        ? pendingTrayTooltip(pendingUpdateInfo.version)
+        : defaultTrayTooltip(),
+    );
+    tray.setContextMenu(buildTrayMenu());
+  } catch (e) {
+    // Tray APIs can throw on Linux DEs without a working tray host.
+    console.warn('[tray] refresh failed:', e.message);
+  }
+}
+
+function createTray() {
+  // Tray is unsupported on some Linux desktops (Wayland/GNOME without
+  // an extension). Wrap the whole init so a tray failure doesn't crash
+  // the app — the existing main.js elsewhere already tolerates a null
+  // tray, but this defends the upgrade-menu path too.
+  try {
+    const iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
+    let icon;
+    if (fs.existsSync(iconPath)) {
+      icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
+    } else {
+      icon = nativeImage.createEmpty();
     }
-  });
+
+    tray = new Tray(icon);
+    tray.setToolTip(defaultTrayTooltip());
+    tray.setContextMenu(buildTrayMenu());
+    tray.on('double-click', () => {
+      if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+  } catch (e) {
+    console.warn('[tray] createTray failed:', e.message);
+    tray = null;
+  }
 }
 
 // ── IPC handlers ─────────────────────────────────────────────────────
@@ -640,6 +711,58 @@ function registerIPC() {
     }
     return resolved;
   });
+
+  // ── Cloud-coordinated auto-update IPC ──────────────────────────────
+  // The renderer's update-banner component calls these. Pairs with
+  // ws_client_update.js which owns the WebSocket + autoUpdater events
+  // and publishes pendingUpdateInfo via the global hook below.
+
+  // Returns whatever update has been downloaded and is awaiting user
+  // restart. `null` when nothing is pending. Renderer polls this on
+  // mount so it can show the banner even if the user closed + reopened
+  // the window after the download landed.
+  ipcMain.handle('get-pending-update-info', () => pendingUpdateInfo);
+
+  // ONLY entry point besides the tray menu for an actual restart. The
+  // banner-only UX requires an explicit user click — never auto-fire.
+  ipcMain.handle('restart-to-apply-update', () => {
+    if (!pendingUpdateInfo) {
+      return { ok: false, error: 'no_pending_update' };
+    }
+    try {
+      app.isQuitting = true;
+      try { stopWorker(); } catch (_) { /* worker may already be down */ }
+      // quitAndInstall(isSilent=false, isForceRunAfter=true): show
+      // installer UI, relaunch app after install completes.
+      autoUpdater.quitAndInstall(false, true);
+      return { ok: true };
+    } catch (e) {
+      console.error('[updater] quitAndInstall failed:', e.message);
+      return { ok: false, error: e.message };
+    }
+  });
+
+  // Snooze suppresses re-broadcast of the update-downloaded IPC for N
+  // hours. The banner that's already up can dismiss itself; we won't
+  // re-prompt until snooze expires. The pending state itself persists
+  // (tray menu stays visible) so the user can still restart manually.
+  ipcMain.handle('snooze-update', (_, payload) => {
+    const hours = Number(payload && payload.hours);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 168) {
+      return { ok: false, error: 'invalid_hours' };
+    }
+    snoozeUntilTs = Date.now() + (hours * 60 * 60 * 1000);
+    return { ok: true, snoozeUntil: snoozeUntilTs };
+  });
+
+  ipcMain.handle('get-device-id', () => {
+    try {
+      return getUpdateDeviceId();
+    } catch (e) {
+      console.warn('[updater] get-device-id failed:', e.message);
+      return null;
+    }
+  });
 }
 
 // ── Friendly block-detection modal ───────────────────────────────────
@@ -738,6 +861,44 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   initUpdater();
+
+  // ── Cloud-coordinated auto-update WebSocket ───────────────────────
+  // ws_client_update.js opens a persistent socket to the prodesk API at
+  // /ws/electron-update. We give it two hooks via the `global` namespace
+  // so it doesn't need to import from main.js (which would create a
+  // circular require):
+  //   - __auraGetApiBase: returns the currently-resolved API_BASE so
+  //     the WS URL follows our network-config resolution chain.
+  //   - __auraOnUpdatePending: invoked when autoUpdater has downloaded
+  //     a new build; updates pendingUpdateInfo, refreshes the tray, and
+  //     re-broadcasts the renderer IPC unless we're inside a snooze
+  //     window.
+  global.__auraGetApiBase = () => API_BASE;
+  global.__auraOnUpdatePending = (info) => {
+    try {
+      pendingUpdateInfo = info && info.version
+        ? { version: String(info.version), downloaded_at: info.downloaded_at, release_notes: info.release_notes || '' }
+        : null;
+      refreshTrayForUpdateState();
+      // Re-broadcast the IPC unless the user has snoozed. ws_client_update
+      // also sends the initial 'update-downloaded' IPC, so this hook is
+      // mostly about the snooze gate + tray refresh. We send a second
+      // notification only after a snooze expires (handled by the renderer
+      // re-polling get-pending-update-info on focus / interval).
+      if (Date.now() >= snoozeUntilTs && mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send('update-downloaded', pendingUpdateInfo);
+        } catch (_) { /* renderer may be navigating */ }
+      }
+    } catch (e) {
+      console.error('[updater] onUpdatePending hook crashed:', e.message);
+    }
+  };
+  try {
+    initElectronUpdateWS();
+  } catch (e) {
+    console.error('[updater] initElectronUpdateWS threw:', e.message);
+  }
 
   // ── Auto-sync research results to coordinator ─────────────────────
   // Per the "no Claude dependency" mandate (memory/feedback_no_claude_

@@ -33,3 +33,24 @@ contextBridge.exposeInMainWorld('auraDesktop', {
   platform: process.platform,
   version: require('./package.json').version,
 });
+
+// ── Cloud-coordinated auto-update API surface ────────────────────────
+// Renderer's update banner consumes this. `onUpdateDownloaded` returns
+// an unsubscribe callback the React component should call from its
+// cleanup phase so we don't leak ipcRenderer listeners on remount.
+// `restartNow` is the ONLY renderer path that triggers an actual
+// restart (paired with the tray menu item) — banner-only UX requires
+// an explicit user click; never auto-fire.
+contextBridge.exposeInMainWorld('auraUpdate', {
+  getPendingInfo: () => ipcRenderer.invoke('get-pending-update-info'),
+  restartNow: () => ipcRenderer.invoke('restart-to-apply-update'),
+  snooze: (hours) => ipcRenderer.invoke('snooze-update', { hours }),
+  getDeviceId: () => ipcRenderer.invoke('get-device-id'),
+  onUpdateDownloaded: (cb) => {
+    const handler = (_event, info) => {
+      try { cb(info); } catch (_) { /* renderer cb errors stay in renderer */ }
+    };
+    ipcRenderer.on('update-downloaded', handler);
+    return () => ipcRenderer.removeListener('update-downloaded', handler);
+  },
+});

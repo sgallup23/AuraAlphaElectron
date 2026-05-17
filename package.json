@@ -1,7 +1,7 @@
 {
   "name": "aura-alpha-desktop",
-  "version": "9.5.22",
-  "description": "Aura Alpha \u00e2\u20ac\u201d Autonomous Trading Intelligence Platform",
+  "version": "9.5.23",
+  "description": "Aura Alpha â€” Autonomous Trading Intelligence Platform",
   "author": {
     "name": "Aura Holdings LLC",
     "email": "shawn@auraalpha.cc"
@@ -19,7 +19,8 @@
     "build:linux": "electron-builder --linux"
   },
   "dependencies": {
-    "electron-updater": "^6.3.0"
+    "electron-updater": "^6.3.0",
+    "ws": "^8.20.1"
   },
   "devDependencies": {
     "electron": "^33.0.0",
@@ -38,6 +39,7 @@
       "updater.js",
       "gpu_setup.js",
       "network-config.js",
+      "ws_client_update.js",
       "dist/**/*",
       "assets/**/*",
       "grid_worker/**/*",
