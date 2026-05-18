@@ -40,10 +40,47 @@ jobs:
       - name: Verify dist integrity
         run: node scripts/verify-dist-integrity.js
 
+      # SSL.com eSigner cloud signing — Windows only.
+      # Requires repo secrets: ESIGNER_USERNAME, ESIGNER_PASSWORD,
+      # ESIGNER_TOTP_SECRET, ESIGNER_CREDENTIAL_ID. If unset, builds skip
+      # signing via AURA_SKIP_SIGN=1 (matches the pre-2026-05-18 behaviour).
+      - name: Setup Java 11 (for CodeSignTool)
+        if: matrix.platform == 'win'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 11
+
+      - name: Install SSL.com CodeSignTool
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $tooldir = "$env:USERPROFILE\CodeSignTool"
+          $zip = "$env:RUNNER_TEMP\CodeSignTool.zip"
+          Invoke-WebRequest -Uri 'https://www.ssl.com/download/codesigntool-for-windows/' -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $tooldir -Force
+          # SSL.com bundles a JRE; we use Actions' Java instead. Resolve nested dir.
+          $inner = Get-ChildItem -Path $tooldir -Directory | Select-Object -First 1
+          if ($inner -and $inner.FullName -ne $tooldir) {
+            Move-Item -Path "$($inner.FullName)\*" -Destination $tooldir -Force
+          }
+          "CODESIGNTOOL_DIR=$tooldir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "CodeSignTool installed at: $tooldir"
+
       - name: Build Electron app
-        run: npx electron-builder --${{ matrix.platform }} ${{ matrix.arch }} --publish never
+        shell: bash
+        run: |
+          if [[ "${{ matrix.platform }}" == "win" && -z "${ESIGNER_USERNAME}" ]]; then
+            echo "::warning::No ESIGNER_* secrets configured — building unsigned"
+            export AURA_SKIP_SIGN=1
+          fi
+          npx electron-builder --${{ matrix.platform }} ${{ matrix.arch }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ESIGNER_USERNAME: ${{ secrets.ESIGNER_USERNAME }}
+          ESIGNER_PASSWORD: ${{ secrets.ESIGNER_PASSWORD }}
+          ESIGNER_TOTP_SECRET: ${{ secrets.ESIGNER_TOTP_SECRET }}
+          ESIGNER_CREDENTIAL_ID: ${{ secrets.ESIGNER_CREDENTIAL_ID }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
