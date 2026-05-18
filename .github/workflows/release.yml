@@ -59,13 +59,20 @@ jobs:
           $zip = "$env:RUNNER_TEMP\CodeSignTool.zip"
           Invoke-WebRequest -Uri 'https://www.ssl.com/download/codesigntool-for-windows/' -OutFile $zip -UseBasicParsing
           Expand-Archive -Path $zip -DestinationPath $tooldir -Force
-          # SSL.com bundles a JRE; we use Actions' Java instead. Resolve nested dir.
-          $inner = Get-ChildItem -Path $tooldir -Directory | Select-Object -First 1
-          if ($inner -and $inner.FullName -ne $tooldir) {
-            Move-Item -Path "$($inner.FullName)\*" -Destination $tooldir -Force
-          }
+          # Do NOT flatten — the sign-with-esigner.js hook walks up to 3 levels
+          # to find conf/code_sign_tool.properties and uses that dir as cwd.
+          # The earlier flatten step incorrectly hoisted conf/* up by one level
+          # when the zip had no wrapper dir, breaking CodeSignTool's
+          # cwd-relative `.\conf\code_sign_tool.properties` lookup.
           "CODESIGNTOOL_DIR=$tooldir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "CodeSignTool installed at: $tooldir"
+          Write-Host "CodeSignTool extracted to: $tooldir"
+          $props = Get-ChildItem -Path $tooldir -Recurse -Filter 'code_sign_tool.properties' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($props) {
+            Write-Host "  located conf at: $($props.FullName)"
+          } else {
+            Write-Error "code_sign_tool.properties not found under $tooldir — sign hook will fail"
+            exit 1
+          }
 
       - name: Build Electron app
         shell: bash

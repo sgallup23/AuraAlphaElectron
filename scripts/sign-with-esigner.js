@@ -82,22 +82,55 @@ module.exports = async function sign(configuration) {
     javaExe = process.platform === 'win32' ? 'java.exe' : 'java';  // PATH lookup
   }
 
-  // Resolve JAR: glob jar/code_sign_tool-*.jar so version bumps don't break this.
+  // Locate the real CodeSignTool root by finding conf/code_sign_tool.properties.
+  // SSL.com's zip has flaky layouts (sometimes top-level, sometimes nested inside
+  // a wrapper dir, sometimes flattened wrong by a workflow flatten step). The
+  // single source of truth is wherever conf/code_sign_tool.properties lives —
+  // its parent is the dir CodeSignTool wants as its cwd (it reads `.\conf\...`
+  // cwd-relative). Walk up to 3 levels deep, then fail loudly.
+  function findCsRoot(start) {
+    const queue = [start];
+    const seen = new Set();
+    let depth = 0;
+    while (queue.length && depth < 200) {
+      const cur = queue.shift();
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      const propsPath = path.join(cur, 'conf', 'code_sign_tool.properties');
+      if (fs.existsSync(propsPath)) return cur;
+      let entries;
+      try { entries = fs.readdirSync(cur, { withFileTypes: true }); }
+      catch { continue; }
+      for (const e of entries) {
+        if (e.isDirectory() && path.relative(start, cur).split(path.sep).length < 3) {
+          queue.push(path.join(cur, e.name));
+        }
+      }
+      depth++;
+    }
+    return null;
+  }
+  const csRoot = findCsRoot(codeSignToolDir);
+  if (!csRoot) {
+    throw new Error(
+      `[sign-with-esigner] conf/code_sign_tool.properties not found under ${codeSignToolDir}\n` +
+      '  CodeSignTool layout is broken — re-extract the SSL.com zip without flattening.'
+    );
+  }
+
+  // Resolve JAR by globbing jar/code_sign_tool-*.jar UNDER the real root.
+  const jarDir = path.join(csRoot, 'jar');
   let jarPath = null;
-  const jarDir = path.join(codeSignToolDir, 'jar');
   if (fs.existsSync(jarDir)) {
     const cands = fs.readdirSync(jarDir).filter(n => /^code_sign_tool-.*\.jar$/.test(n));
     if (cands.length) jarPath = path.join(jarDir, cands.sort().pop());
   }
   if (!jarPath) {
-    throw new Error(
-      `[sign-with-esigner] code_sign_tool-*.jar not found under ${jarDir}\n` +
-      '  Set CODESIGNTOOL_DIR or install to the default path.'
-    );
+    throw new Error(`[sign-with-esigner] code_sign_tool-*.jar not found under ${jarDir}`);
   }
 
-  // CodeSignTool needs cwd at its install dir so its `conf/code_sign_tool.properties`
-  // is found relative to the JAR. Also: -override replaces the input file in place.
+  // CodeSignTool needs cwd at csRoot so its `.\conf\code_sign_tool.properties`
+  // resolves. -override replaces the input file in place.
   const args = [
     '-jar', jarPath,
     'sign',
@@ -110,16 +143,32 @@ module.exports = async function sign(configuration) {
     '-override',
   ];
 
-  console.log(`[sign-with-esigner] signing ${path.basename(target)} via SSL.com eSigner...`);
+  console.log(`[sign-with-esigner] signing ${path.basename(target)} via SSL.com eSigner... (csRoot=${csRoot})`);
+  // Capture output so we can verify CodeSignTool actually succeeded. The tool
+  // sometimes exits 0 even when it logs a fatal exception (e.g.
+  // FileNotFoundException on conf/code_sign_tool.properties), so exit-code
+  // alone is not enough — we MUST grep stdout for "Code signed successfully".
+  let result;
   try {
-    execFileSync(javaExe, args, {
-      cwd: codeSignToolDir,
-      stdio: ['ignore', 'inherit', 'inherit'],
-      // Don't leak the secrets to subprocess env unless it needs them.
+    result = require('child_process').spawnSync(javaExe, args, {
+      cwd: csRoot,
       env: { ...process.env },
+      encoding: 'utf8',
     });
   } catch (err) {
-    throw new Error(`[sign-with-esigner] CodeSignTool failed for ${target}: ${err.message}`);
+    throw new Error(`[sign-with-esigner] failed to spawn java for ${target}: ${err.message}`);
+  }
+  const out = (result.stdout || '') + (result.stderr || '');
+  // Always echo CodeSignTool's output so logs show what happened.
+  if (out) process.stdout.write(out);
+  if (result.status !== 0) {
+    throw new Error(`[sign-with-esigner] CodeSignTool exited ${result.status} for ${target}`);
+  }
+  if (!/Code signed successfully/.test(out)) {
+    throw new Error(
+      `[sign-with-esigner] CodeSignTool exited 0 but did NOT report success for ${target}.\n` +
+      '  Output above. Common causes: missing conf/, OTP invalid, malware scan, network.'
+    );
   }
   console.log(`[sign-with-esigner] OK — ${path.basename(target)}`);
 };
