@@ -1,0 +1,1 @@
+import{r as s}from"./vendor-CL9TIcsc.js";function c(r,e){const t=s.useRef(null);return s.useEffect(()=>{r&&r.length>0&&!e&&(t.current=r)},[r,e]),{ghostData:t.current,isGhost:e&&!!t.current}}export{c as u};

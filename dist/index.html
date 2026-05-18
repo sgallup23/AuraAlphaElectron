@@ -29,7 +29,14 @@
     <meta name="keywords" content="algorithmic trading, AI trading bot, automated trading, stock trading bot, crypto trading bot, backtesting, trading signals, IBKR, Alpaca, Kraken">
     <meta name="robots" content="index, follow">
     <meta name="author" content="Aura Alpha">
-    <link rel="canonical" href="https://auraalpha.cc">
+    <!-- Canonical link is set per-route by the inline route-meta script below
+         (and by react-helmet-async in the SPA shell once the bundle boots).
+         A static `canonical=https://auraalpha.cc` was previously here and
+         caused Google to mark every sub-route as a duplicate of "/", which
+         excluded the entire sitemap from the index. Do not re-add a static
+         canonical — Googlebot's initial parse picks it up before any JS,
+         and the right canonical for /strategies/<slug> etc. is the URL
+         itself, not the homepage. -->
     <title>Aura Alpha — AI-Powered Algorithmic Trading Platform</title>
 
     <!-- Open Graph / Facebook -->
@@ -120,8 +127,25 @@
           route = ['Join me on Aura Alpha \u2014 We both get 2 months free', '83 strategies, autonomous trading agents, 47 brokers. Sign up with my link and we both get 2 months free.'];
         }
 
+        // \u2500\u2500 ALWAYS set canonical to the current URL \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        // Even when the path isn't in the static lookup table (e.g.
+        // /strategies/<slug>, /blog/<post>, /compare/<x>), the canonical
+        // MUST point at the URL itself \u2014 never the homepage. Insert the
+        // <link> if it's missing; the head no longer ships one statically.
+        var canonicalUrl = 'https://auraalpha.cc' + path;
+        var canonical = document.querySelector('link[rel="canonical"]');
+        if (!canonical) {
+          canonical = document.createElement('link');
+          canonical.setAttribute('rel', 'canonical');
+          document.head.appendChild(canonical);
+        }
+        canonical.setAttribute('href', canonicalUrl);
+        // Mirror to og:url so social previews don't all say "auraalpha.cc"
+        var ogUrl = document.querySelector('meta[property="og:url"]');
+        if (ogUrl) ogUrl.setAttribute('content', canonicalUrl);
+
         if (route) {
-          var t = route[0], d = route[1], u = 'https://auraalpha.cc' + path;
+          var t = route[0], d = route[1], u = canonicalUrl;
           document.title = t + ' | Aura Alpha';
           var tags = {
             'og:title': t, 'og:description': d, 'og:url': u, 'og:image': img,
@@ -135,8 +159,6 @@
           if (descMeta) descMeta.setAttribute('content', d);
           var titleMeta = document.querySelector('meta[name="title"]');
           if (titleMeta) titleMeta.setAttribute('content', t + ' | Aura Alpha');
-          var canonical = document.querySelector('link[rel="canonical"]');
-          if (canonical) canonical.setAttribute('href', u);
         }
       })();
     </script>
@@ -321,12 +343,12 @@
       ]
     }
     </script>
-    <script type="module" crossorigin src="/assets/index-C17cu28Z.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/vendor-D57z63HY.js">
-    <link rel="modulepreload" crossorigin href="/assets/i18n-EWgOHAM2.js">
-    <link rel="modulepreload" crossorigin href="/assets/motion-BdIz2bXo.js">
-    <link rel="modulepreload" crossorigin href="/assets/radix-D5O41Fh6.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-BOHT4B7Z.css">
+    <script type="module" crossorigin src="/assets/index-BQrVhhi3.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-CL9TIcsc.js">
+    <link rel="modulepreload" crossorigin href="/assets/i18n-D77-lTfE.js">
+    <link rel="modulepreload" crossorigin href="/assets/motion-P4m0MKnO.js">
+    <link rel="modulepreload" crossorigin href="/assets/radix-BX0blWs4.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-CbrdvkJE.css">
   </head>
   <body>
     <div id="root">
